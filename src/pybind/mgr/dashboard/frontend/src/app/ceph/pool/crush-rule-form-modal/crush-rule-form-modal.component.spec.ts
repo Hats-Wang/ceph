@@ -2,22 +2,15 @@ import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import {
-  configureTestBed,
-  FixtureHelper,
-  FormHelper,
-  i18nProviders,
-  Mocks
-} from '../../../../testing/unit-test-helper';
-import { CrushRuleService } from '../../../shared/api/crush-rule.service';
-import { CrushNode } from '../../../shared/models/crush-node';
-import { CrushRuleConfig } from '../../../shared/models/crush-rule';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { CrushRuleService } from '~/app/shared/api/crush-rule.service';
+import { CrushNode } from '~/app/shared/models/crush-node';
+import { CrushRuleConfig } from '~/app/shared/models/crush-rule';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { configureTestBed, FixtureHelper, FormHelper, Mocks } from '~/testing/unit-test-helper';
 import { PoolModule } from '../pool.module';
 import { CrushRuleFormModalComponent } from './crush-rule-form-modal.component';
 
@@ -72,14 +65,8 @@ describe('CrushRuleFormComponent', () => {
   };
 
   configureTestBed({
-    imports: [
-      HttpClientTestingModule,
-      RouterTestingModule,
-      ToastrModule.forRoot(),
-      PoolModule,
-      NgBootstrapFormValidationModule.forRoot()
-    ],
-    providers: [CrushRuleService, BsModalRef, i18nProviders]
+    imports: [HttpClientTestingModule, RouterTestingModule, ToastrModule.forRoot(), PoolModule],
+    providers: [CrushRuleService, NgbActiveModal]
   });
 
   beforeEach(() => {

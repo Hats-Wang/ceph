@@ -1,16 +1,15 @@
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 
-import * as _ from 'lodash';
-import { forkJoin as observableForkJoin, of as observableOf } from 'rxjs';
+import _ from 'lodash';
+import { of as observableOf } from 'rxjs';
 import { mergeMap } from 'rxjs/operators';
 
 import { cdEncode } from '../decorators/cd-encode';
-import { ApiModule } from './api.module';
 
 @cdEncode
 @Injectable({
-  providedIn: ApiModule
+  providedIn: 'root'
 })
 export class RgwBucketService {
   private url = 'api/rgw/bucket';
@@ -22,18 +21,9 @@ export class RgwBucketService {
    * @return {Observable<Object[]>}
    */
   list() {
-    return this.enumerate().pipe(
-      mergeMap((buckets: string[]) => {
-        if (buckets.length > 0) {
-          return observableForkJoin(
-            buckets.map((bucket: string) => {
-              return this.get(bucket);
-            })
-          );
-        }
-        return observableOf([]);
-      })
-    );
+    let params = new HttpParams();
+    params = params.append('stats', 'true');
+    return this.http.get(this.url, { params: params });
   }
 
   /**

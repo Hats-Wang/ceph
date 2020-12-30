@@ -52,6 +52,7 @@
       group snap remove (... rm)        Remove a snapshot from a group.
       group snap rename                 Rename group's snapshot.
       group snap rollback               Rollback group to snapshot.
+      image-cache invalidate            Discard existing / dirty image cache
       image-meta get                    Image metadata get the value associated
                                         with the key.
       image-meta list (image-meta ls)   Image metadata list keys with values.
@@ -229,8 +230,8 @@
   Positional arguments
     <source-snap-spec>        source snapshot specification
                               (example:
-                              [<pool-name>/[<namespace>/]]<image-name>@<snapshot-n
-                              ame>)
+                              [<pool-name>/[<namespace>/]]<image-name>@<snap-name>
+                              )
     <dest-image-spec>         destination image specification
                               (example: [<pool-name>/[<namespace>/]]<image-name>)
   
@@ -602,7 +603,7 @@
     --snap arg               snapshot name
     --read-only              map read-only
     --exclusive              disable automatic exclusive lock transitions
-    --quiesce                use quiesce callbacks
+    --quiesce                use quiesce hooks
     --quiesce-hook arg       quiesce hook path
     -o [ --options ] arg     device specific options
   
@@ -615,8 +616,8 @@
   
   Positional arguments
     <image-or-snap-or-device-spec>  image, snapshot, or device specification
-                                    [<pool-name>/]<image-name>[@<snapshot-name>]
-                                    or <device-path>
+                                    [<pool-name>/]<image-name>[@<snap-name>] or
+                                    <device-path>
   
   Optional arguments
     -t [ --device-type ] arg        device type [ggate, krbd (default), nbd]
@@ -726,7 +727,7 @@
   rbd help feature disable
   usage: rbd feature disable [--pool <pool>] [--namespace <namespace>] 
                              [--image <image>] 
-                             <image-spec> <features> [<features> ...]
+                             <image-spec> <features> [<features> ...] 
   
   Disable the specified image feature.
   
@@ -747,7 +748,7 @@
                             [--journal-splay-width <journal-splay-width>] 
                             [--journal-object-size <journal-object-size>] 
                             [--journal-pool <journal-pool>] 
-                            <image-spec> <features> [<features> ...]
+                            <image-spec> <features> [<features> ...] 
   
   Enable the specified image feature.
   
@@ -928,20 +929,23 @@
   rbd help group snap create
   usage: rbd group snap create [--pool <pool>] [--namespace <namespace>] 
                                [--group <group>] [--snap <snap>] 
+                               [--skip-quiesce] [--ignore-quiesce-error] 
                                <group-snap-spec> 
   
   Make a snapshot of a group.
   
   Positional arguments
-    <group-snap-spec>    group specification
-                         (example:
-                         [<pool-name>/[<namespace>/]]<group-name>@<snap-name>)
+    <group-snap-spec>       group specification
+                            (example:
+                            [<pool-name>/[<namespace>/]]<group-name>@<snap-name>)
   
   Optional arguments
-    -p [ --pool ] arg    pool name
-    --namespace arg      namespace name
-    --group arg          group name
-    --snap arg           snapshot name
+    -p [ --pool ] arg       pool name
+    --namespace arg         namespace name
+    --group arg             group name
+    --snap arg              snapshot name
+    --skip-quiesce          do not run quiesce hooks
+    --ignore-quiesce-error  ignore quiesce hook error
   
   rbd help group snap list
   usage: rbd group snap list [--format <format>] [--pretty-format] 
@@ -993,7 +997,7 @@
                          (example:
                          [<pool-name>/[<namespace>/]]<group-name>@<snap-name>)
     <dest-snap>          destination snapshot name
-                         (example: <snapshot-name>)
+                         (example: <snap-name>)
   
   Optional arguments
     -p [ --pool ] arg    pool name
@@ -1021,6 +1025,23 @@
     --namespace arg      namespace name
     --group arg          group name
     --snap arg           snapshot name
+  
+  rbd help image-cache invalidate
+  usage: rbd image-cache invalidate [--pool <pool>] [--namespace <namespace>] 
+                                    [--image <image>] [--image-id <image-id>] 
+                                    <image-spec> 
+  
+  Discard existing / dirty image cache
+  
+  Positional arguments
+    <image-spec>         image specification
+                         (example: [<pool-name>/[<namespace>/]]<image-name>)
+  
+  Optional arguments
+    -p [ --pool ] arg    pool name
+    --namespace arg      namespace name
+    --image arg          image name
+    --image-id arg       image id
   
   rbd help image-meta get
   usage: rbd image-meta get [--pool <pool>] [--namespace <namespace>] 
@@ -1466,8 +1487,11 @@
     --no-progress        disable progress output
   
   rbd help migration prepare
-  usage: rbd migration prepare [--pool <pool>] [--namespace <namespace>] 
-                               [--image <image>] [--dest-pool <dest-pool>] 
+  usage: rbd migration prepare [--import-only] 
+                               [--source-spec-path <source-spec-path>] 
+                               [--source-spec <source-spec>] [--pool <pool>] 
+                               [--namespace <namespace>] [--image <image>] 
+                               [--dest-pool <dest-pool>] 
                                [--dest-namespace <dest-namespace>] 
                                [--dest <dest>] [--image-format <image-format>] 
                                [--new-format] [--order <order>] 
@@ -1491,6 +1515,9 @@
                               (example: [<pool-name>/[<namespace>/]]<image-name>)
   
   Optional arguments
+    --import-only             only import data from source
+    --source-spec-path arg    source-spec file (or '-' for stdin)
+    --source-spec arg         source-spec
     -p [ --pool ] arg         source pool name
     --namespace arg           source namespace name
     --image arg               source image name
@@ -1603,19 +1630,22 @@
   
   rbd help mirror image snapshot
   usage: rbd mirror image snapshot [--pool <pool>] [--namespace <namespace>] 
-                                   [--image <image>] 
+                                   [--image <image>] [--skip-quiesce] 
+                                   [--ignore-quiesce-error] 
                                    <image-spec> 
   
   Create RBD mirroring image snapshot.
   
   Positional arguments
-    <image-spec>         image specification
-                         (example: [<pool-name>/[<namespace>/]]<image-name>)
+    <image-spec>            image specification
+                            (example: [<pool-name>/[<namespace>/]]<image-name>)
   
   Optional arguments
-    -p [ --pool ] arg    pool name
-    --namespace arg      namespace name
-    --image arg          image name
+    -p [ --pool ] arg       pool name
+    --namespace arg         namespace name
+    --image arg             image name
+    --skip-quiesce          do not run quiesce hooks
+    --ignore-quiesce-error  ignore quiesce hook error
   
   rbd help mirror image status
   usage: rbd mirror image status [--pool <pool>] [--namespace <namespace>] 
@@ -2102,21 +2132,25 @@
   
   rbd help snap create
   usage: rbd snap create [--pool <pool>] [--namespace <namespace>] 
-                         [--image <image>] [--snap <snap>] 
+                         [--image <image>] [--snap <snap>] [--skip-quiesce] 
+                         [--ignore-quiesce-error] [--no-progress] 
                          <snap-spec> 
   
   Create a snapshot.
   
   Positional arguments
-    <snap-spec>          snapshot specification
-                         (example:
-                         [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)
+    <snap-spec>             snapshot specification
+                            (example:
+                            [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)
   
   Optional arguments
-    -p [ --pool ] arg    pool name
-    --namespace arg      namespace name
-    --image arg          image name
-    --snap arg           snapshot name
+    -p [ --pool ] arg       pool name
+    --namespace arg         namespace name
+    --image arg             image name
+    --snap arg              snapshot name
+    --skip-quiesce          do not run quiesce hooks
+    --ignore-quiesce-error  ignore quiesce hook error
+    --no-progress           disable progress output
   
   rbd help snap limit clear
   usage: rbd snap limit clear [--pool <pool>] [--namespace <namespace>] 
@@ -2182,7 +2216,7 @@
   Positional arguments
     <snap-spec>          snapshot specification
                          (example:
-                         [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)
+                         [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)
   
   Optional arguments
     -p [ --pool ] arg    pool name
@@ -2220,7 +2254,7 @@
   Positional arguments
     <snap-spec>          snapshot specification
                          (example:
-                         [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)
+                         [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)
   
   Optional arguments
     -p [ --pool ] arg    pool name
@@ -2245,10 +2279,10 @@
   Positional arguments
     <source-snap-spec>   source snapshot specification
                          (example:
-                         [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)
+                         [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)
     <dest-snap-spec>     destination snapshot specification
                          (example:
-                         [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)
+                         [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)
   
   Optional arguments
     -p [ --pool ] arg    source pool name
@@ -2270,7 +2304,7 @@
   Positional arguments
     <snap-spec>          snapshot specification
                          (example:
-                         [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)
+                         [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)
   
   Optional arguments
     -p [ --pool ] arg    pool name
@@ -2290,7 +2324,7 @@
   Positional arguments
     <snap-spec>          snapshot specification
                          (example:
-                         [<pool-name>/[<namespace>/]]<image-name>@<snapshot-name>)
+                         [<pool-name>/[<namespace>/]]<image-name>@<snap-name>)
   
   Optional arguments
     -p [ --pool ] arg    pool name

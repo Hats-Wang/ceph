@@ -3,9 +3,9 @@
 
 #pragma once
 
-#include <seastar/core/gate.hh>
 #include <seastar/core/timer.hh>
 
+#include "crimson/common/gated.h"
 #include "crimson/net/Dispatcher.h"
 #include "crimson/net/Fwd.h"
 #include "mon/MgrMap.h"
@@ -24,9 +24,7 @@ namespace crimson::mgr
 // implement WithStats if you want to report stats to mgr periodically
 class WithStats {
 public:
-  // the method is not const, because the class sending stats might need to
-  // update a seq number every time it collects the stats
-  virtual MessageRef get_stats() = 0;
+  virtual MessageRef get_stats() const = 0;
   virtual ~WithStats() {}
 };
 
@@ -36,17 +34,18 @@ public:
 	 WithStats& with_stats);
   seastar::future<> start();
   seastar::future<> stop();
+  void report();
+
 private:
-  seastar::future<> ms_dispatch(crimson::net::Connection* conn,
-				Ref<Message> m) override;
+  std::optional<seastar::future<>> ms_dispatch(
+      crimson::net::ConnectionRef conn, Ref<Message> m) override;
   void ms_handle_reset(crimson::net::ConnectionRef conn, bool is_replace) final;
   void ms_handle_connect(crimson::net::ConnectionRef conn) final;
-  seastar::future<> handle_mgr_map(crimson::net::Connection* conn,
+  seastar::future<> handle_mgr_map(crimson::net::ConnectionRef conn,
 				   Ref<MMgrMap> m);
-  seastar::future<> handle_mgr_conf(crimson::net::Connection* conn,
+  seastar::future<> handle_mgr_conf(crimson::net::ConnectionRef conn,
 				    Ref<MMgrConfigure> m);
   seastar::future<> reconnect();
-  void report();
 
   void print(std::ostream&) const;
   friend std::ostream& operator<<(std::ostream& out, const Client& client);

@@ -34,7 +34,7 @@ class MOSDOpReply;
 
 namespace _mosdop {
 template<typename V>
-class MOSDOp : public MOSDFastDispatchOp {
+class MOSDOp final : public MOSDFastDispatchOp {
 private:
   static constexpr int HEAD_VERSION = 8;
   static constexpr int COMPAT_VERSION = 3;
@@ -193,7 +193,7 @@ public:
     reqid.inc = inc;
   }
 private:
-  ~MOSDOp() override {}
+  ~MOSDOp() final {}
 
 public:
   void set_mtime(utime_t mt) { mtime = mt; }
@@ -211,12 +211,12 @@ public:
   }
   void write(uint64_t off, uint64_t len, ceph::buffer::list& bl) {
     add_simple_op(CEPH_OSD_OP_WRITE, off, len);
-    data.claim(bl);
+    data = std::move(bl);
     header.data_off = off;
   }
   void writefull(ceph::buffer::list& bl) {
     add_simple_op(CEPH_OSD_OP_WRITEFULL, 0, bl.length());
-    data.claim(bl);
+    data = std::move(bl);
     header.data_off = 0;
   }
   void zero(uint64_t off, uint64_t len) {

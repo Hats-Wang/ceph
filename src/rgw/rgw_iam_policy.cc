@@ -382,7 +382,7 @@ bool ParseState::key(const char* s, size_t l) {
   bool ifexists = false;
   if (w->id == TokenID::Condition && w->kind == TokenKind::statement) {
     static constexpr char IfExists[] = "IfExists";
-    if (boost::algorithm::ends_with(boost::string_view{s, l}, IfExists)) {
+    if (boost::algorithm::ends_with(std::string_view{s, l}, IfExists)) {
       ifexists = true;
       token_len -= sizeof(IfExists)-1;
     }
@@ -977,12 +977,9 @@ ostream& operator <<(ostream& m, const Condition& c) {
 Effect Statement::eval(const Environment& e,
 		       boost::optional<const rgw::auth::Identity&> ida,
 		       uint64_t act, const ARN& res) const {
-  if (ida) {
-    if (!princ.empty() && !ida->is_identity(princ)) {
-      return Effect::Pass;
-    } else if (!noprinc.empty() && ida->is_identity(noprinc)) {
-      return Effect::Pass;
-    }
+
+  if (eval_principal(e, ida) == Effect::Deny) {
+    return Effect::Pass;
   }
 
   if (!resource.empty()) {

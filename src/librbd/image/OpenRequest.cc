@@ -5,6 +5,7 @@
 #include "common/dout.h"
 #include "common/errno.h"
 #include "cls/rbd/cls_rbd_client.h"
+#include "librbd/ConfigWatcher.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/PluginRegistry.h"
 #include "librbd/Utils.h"
@@ -483,6 +484,7 @@ Context *OpenRequest<I>::handle_v2_get_data_pool(int *result) {
       m_image_ctx->data_ctx.close();
     } else {
       m_image_ctx->data_ctx.set_namespace(m_image_ctx->md_ctx.get_namespace());
+      m_image_ctx->rebuild_data_io_context();
     }
   } else {
     data_pool_id = m_image_ctx->md_ctx.get_id();
@@ -499,6 +501,9 @@ void OpenRequest<I>::send_refresh() {
 
   CephContext *cct = m_image_ctx->cct;
   ldout(cct, 10) << this << " " << __func__ << dendl;
+
+  m_image_ctx->config_watcher = ConfigWatcher<I>::create(*m_image_ctx);
+  m_image_ctx->config_watcher->init();
 
   using klass = OpenRequest<I>;
   RefreshRequest<I> *req = RefreshRequest<I>::create(
@@ -553,8 +558,8 @@ Context* OpenRequest<I>::handle_init_plugin_registry(int *result) {
 
 template <typename I>
 Context *OpenRequest<I>::send_init_cache(int *result) {
-  // cache is disabled or parent image context
-  if (!m_image_ctx->cache || m_image_ctx->child != nullptr) {
+  if (!m_image_ctx->cache || m_image_ctx->child != nullptr ||
+      !m_image_ctx->data_ctx.is_valid()) {
     return send_register_watch(result);
   }
 
@@ -571,6 +576,8 @@ Context *OpenRequest<I>::send_init_cache(int *result) {
     auto cache = cache::WriteAroundObjectDispatch<I>::create(
       m_image_ctx, max_dirty, writethrough_until_flush);
     cache->init();
+
+    m_image_ctx->readahead.set_max_readahead_size(0);
   } else if (cache_policy == "writethrough" || cache_policy == "writeback") {
     if (cache_policy == "writethrough") {
       max_dirty = 0;

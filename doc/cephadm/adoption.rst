@@ -75,11 +75,11 @@ Adoption process
 #. Generate an SSH key::
 
      # ceph cephadm generate-key
-     # ceph cephadm get-pub-key > ceph.pub
+     # ceph cephadm get-pub-key > ~/ceph.pub
 
 #. Install the cluster SSH key on each host in the cluster::
 
-     # ssh-copy-id -f -i ceph.pub root@<host>
+     # ssh-copy-id -f -i ~/ceph.pub root@<host>
 
    .. note::
      It is also possible to import an existing ssh key. See
@@ -111,9 +111,9 @@ Adoption process
 
 #. Redeploy MDS daemons by telling cephadm how many daemons to run for
    each file system.  You can list file systems by name with ``ceph fs
-   ls``.  For each file system::
+   ls``.  Run the following command on the master nodes::
 
-     # ceph orch apply mds <fs-name> <num-daemons>
+     # ceph orch apply mds <fs-name> [--placement=<placement>]
 
    For example, in a cluster with a single file system called `foo`::
 
@@ -133,7 +133,7 @@ Adoption process
 #. Redeploy RGW daemons.  Cephadm manages RGW daemons by zone.  For each
    zone, deploy new RGW daemons with cephadm::
 
-     # ceph orch apply rgw <realm> <zone> <placement> [--port <port>] [--ssl]
+     # ceph orch apply rgw <realm> <zone> [--subcluster=<subcluster>] [--port=<port>] [--ssl] [--placement=<placement>]
 
    where *<placement>* can be a simple daemon count, or a list of
    specific hosts (see :ref:`orchestrator-cli-placement-spec`).

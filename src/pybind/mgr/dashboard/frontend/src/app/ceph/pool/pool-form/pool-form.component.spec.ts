@@ -6,33 +6,38 @@ import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { ActivatedRoute, Router, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { NgbNavModule } from '@ng-bootstrap/ng-bootstrap';
-import * as _ from 'lodash';
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
-import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
+import {
+  NgbActiveModal,
+  NgbModalModule,
+  NgbModalRef,
+  NgbNavModule
+} from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
+import { DashboardNotFoundError } from '~/app/core/error/error';
+import { ErrorComponent } from '~/app/core/error/error.component';
+import { CrushRuleService } from '~/app/shared/api/crush-rule.service';
+import { ErasureCodeProfileService } from '~/app/shared/api/erasure-code-profile.service';
+import { PoolService } from '~/app/shared/api/pool.service';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { SelectBadgesComponent } from '~/app/shared/components/select-badges/select-badges.component';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { ErasureCodeProfile } from '~/app/shared/models/erasure-code-profile';
+import { Permission } from '~/app/shared/models/permissions';
+import { PoolFormInfo } from '~/app/shared/models/pool-form-info';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { SharedModule } from '~/app/shared/shared.module';
 import {
   configureTestBed,
   FixtureHelper,
   FormHelper,
-  i18nProviders,
   Mocks,
   modalServiceShow
-} from '../../../../testing/unit-test-helper';
-import { NotFoundComponent } from '../../../core/not-found/not-found.component';
-import { CrushRuleService } from '../../../shared/api/crush-rule.service';
-import { ErasureCodeProfileService } from '../../../shared/api/erasure-code-profile.service';
-import { PoolService } from '../../../shared/api/pool.service';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { SelectBadgesComponent } from '../../../shared/components/select-badges/select-badges.component';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { ErasureCodeProfile } from '../../../shared/models/erasure-code-profile';
-import { Permission } from '../../../shared/models/permissions';
-import { PoolFormInfo } from '../../../shared/models/pool-form-info';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+} from '~/testing/unit-test-helper';
 import { Pool } from '../pool';
 import { PoolModule } from '../pool.module';
 import { PoolFormComponent } from './pool-form.component';
@@ -48,6 +53,8 @@ describe('PoolFormComponent', () => {
   let router: Router;
   let ecpService: ErasureCodeProfileService;
   let crushRuleService: CrushRuleService;
+  let poolPermissions: Permission;
+  let authStorageService: AuthStorageService;
 
   const setPgNum = (pgs: number): AbstractControl => {
     const control = formHelper.setValue('pgNum', pgs);
@@ -128,27 +135,30 @@ describe('PoolFormComponent', () => {
     formHelper = new FormHelper(form);
   };
 
-  const routes: Routes = [{ path: '404', component: NotFoundComponent }];
+  const routes: Routes = [{ path: '404', component: ErrorComponent }];
 
-  configureTestBed({
-    declarations: [NotFoundComponent],
-    imports: [
-      BrowserAnimationsModule,
-      HttpClientTestingModule,
-      RouterTestingModule.withRoutes(routes),
-      ToastrModule.forRoot(),
-      NgbNavModule,
-      PoolModule,
-      NgBootstrapFormValidationModule.forRoot()
-    ],
-    providers: [
-      ErasureCodeProfileService,
-      BsModalRef,
-      SelectBadgesComponent,
-      { provide: ActivatedRoute, useValue: { params: of({ name: 'somePoolName' }) } },
-      i18nProviders
-    ]
-  });
+  configureTestBed(
+    {
+      declarations: [ErrorComponent],
+      imports: [
+        BrowserAnimationsModule,
+        HttpClientTestingModule,
+        RouterTestingModule.withRoutes(routes),
+        ToastrModule.forRoot(),
+        NgbNavModule,
+        PoolModule,
+        SharedModule,
+        NgbModalModule
+      ],
+      providers: [
+        ErasureCodeProfileService,
+        NgbActiveModal,
+        SelectBadgesComponent,
+        { provide: ActivatedRoute, useValue: { params: of({ name: 'somePoolName' }) } }
+      ]
+    },
+    [CriticalConfirmationModalComponent]
+  );
 
   let navigationSpy: jasmine.Spy;
 
@@ -162,7 +172,11 @@ describe('PoolFormComponent', () => {
 
     router = TestBed.inject(Router);
     navigationSpy = spyOn(router, 'navigate').and.stub();
-
+    authStorageService = TestBed.inject(AuthStorageService);
+    spyOn(authStorageService, 'getPermissions').and.callFake(() => ({
+      pool: poolPermissions
+    }));
+    poolPermissions = new Permission(['update', 'delete', 'read', 'create']);
     setUpPoolComponent();
 
     component.loadingReady();
@@ -172,57 +186,47 @@ describe('PoolFormComponent', () => {
     expect(component).toBeTruthy();
   });
 
-  describe('redirect not allowed users', () => {
-    let poolPermissions: Permission;
-    let authStorageService: AuthStorageService;
-
-    const expectRedirect = (redirected = true) => {
+  describe('throws error for not allowed users', () => {
+    const expectError = (redirected: boolean) => {
       navigationSpy.calls.reset();
-      component.authenticate();
-      expect(navigationSpy).toHaveBeenCalledTimes(redirected ? 1 : 0);
+      if (redirected) {
+        expect(() => component.authenticate()).toThrowError(DashboardNotFoundError);
+      } else {
+        expect(() => component.authenticate()).not.toThrowError();
+      }
     };
 
     beforeEach(() => {
-      poolPermissions = {
-        create: false,
-        update: false,
-        read: false,
-        delete: false
-      };
-      authStorageService = TestBed.inject(AuthStorageService);
-      spyOn(authStorageService, 'getPermissions').and.callFake(() => ({
-        pool: poolPermissions
-      }));
+      poolPermissions = new Permission(['delete']);
     });
 
-    it('navigates to 404 if not allowed', () => {
-      component.authenticate();
-      expect(router.navigate).toHaveBeenCalledWith(['/404']);
+    it('navigates to Dashboard if not allowed', () => {
+      expect(() => component.authenticate()).toThrowError(DashboardNotFoundError);
     });
 
-    it('navigates if user is not allowed', () => {
-      expectRedirect();
+    it('throws error if user is not allowed', () => {
+      expectError(true);
       poolPermissions.read = true;
-      expectRedirect();
+      expectError(true);
       poolPermissions.delete = true;
-      expectRedirect();
+      expectError(true);
       poolPermissions.update = true;
-      expectRedirect();
+      expectError(true);
       component.editing = true;
       poolPermissions.update = false;
       poolPermissions.create = true;
-      expectRedirect();
+      expectError(true);
     });
 
-    it('does not navigate users with right permissions', () => {
+    it('does not throw error for users with right permissions', () => {
       poolPermissions.read = true;
       poolPermissions.create = true;
-      expectRedirect(false);
+      expectError(false);
       component.editing = true;
       poolPermissions.update = true;
-      expectRedirect(false);
+      expectError(false);
       poolPermissions.create = false;
-      expectRedirect(false);
+      expectError(false);
     });
   });
 
@@ -310,6 +314,17 @@ describe('PoolFormComponent', () => {
       );
       formHelper.expectErrorChange('size', 4, 'max'); // More than rule allows
       formHelper.expectValidChange('size', 2);
+    });
+
+    it('validates if warning is displayed when size is 1', () => {
+      formHelper.setValue('poolType', 'replicated');
+      formHelper.expectValid('size');
+
+      formHelper.setValue('size', 1, true);
+      expect(fixtureHelper.getElementByCss('#size ~ .text-warning-dark')).toBeTruthy();
+
+      formHelper.setValue('size', 2, true);
+      expect(fixtureHelper.getElementByCss('#size ~ .text-warning-dark')).toBeFalsy();
     });
 
     it('validates compression mode default value', () => {
@@ -782,9 +797,9 @@ describe('PoolFormComponent', () => {
     it('should select the newly created rule', () => {
       expect(form.getValue('crushRule').rule_name).toBe('rep1');
       const name = 'awesomeRule';
-      spyOn(TestBed.inject(BsModalService), 'show').and.callFake(() => {
+      spyOn(TestBed.inject(ModalService), 'show').and.callFake(() => {
         return {
-          content: {
+          componentInstance: {
             submitAction: of({ name })
           }
         };
@@ -845,11 +860,11 @@ describe('PoolFormComponent', () => {
       };
 
       beforeEach(() => {
-        modalSpy = spyOn(TestBed.inject(BsModalService), 'show').and.callFake(
-          (deletionClass: any, config: any) => {
-            deletion = Object.assign(new deletionClass(), config.initialState);
+        modalSpy = spyOn(TestBed.inject(ModalService), 'show').and.callFake(
+          (deletionClass: any, initialState: any) => {
+            deletion = Object.assign(new deletionClass(), initialState);
             return {
-              content: deletion
+              componentInstance: deletion
             };
           }
         );
@@ -906,7 +921,7 @@ describe('PoolFormComponent', () => {
 
         it('should hide the tooltip when clicking on add', () => {
           modalSpy.and.callFake((): any => ({
-            content: {
+            componentInstance: {
               submitAction: of('someRule')
             }
           }));
@@ -950,9 +965,9 @@ describe('PoolFormComponent', () => {
       spyOn(ecpService, 'list').and.callFake(() => of(infoReturn.erasure_code_profiles));
       expect(form.getValue('erasureProfile').name).toBe('ecp1');
       const name = 'awesomeProfile';
-      spyOn(TestBed.inject(BsModalService), 'show').and.callFake(() => {
+      spyOn(TestBed.inject(ModalService), 'show').and.callFake(() => {
         return {
-          content: {
+          componentInstance: {
             submitAction: of({ name })
           }
         };
@@ -969,11 +984,11 @@ describe('PoolFormComponent', () => {
       let deletion: CriticalConfirmationModalComponent;
       let deleteSpy: jasmine.Spy;
       let modalSpy: jasmine.Spy;
-      let modal: any;
+      let modal: NgbModalRef;
 
       const callEcpDeletion = () => {
         component.deleteErasureCodeProfile();
-        modal.ref.content.callSubmitAction();
+        modal.componentInstance.callSubmitAction();
       };
 
       const expectSuccessfulEcpDeletion = (name: string) => {
@@ -994,10 +1009,10 @@ describe('PoolFormComponent', () => {
 
       beforeEach(() => {
         deletion = undefined;
-        modalSpy = spyOn(TestBed.inject(BsModalService), 'show').and.callFake(
+        modalSpy = spyOn(TestBed.inject(ModalService), 'show').and.callFake(
           (comp: any, init: any) => {
             modal = modalServiceShow(comp, init);
-            return modal.ref;
+            return modal;
           }
         );
         deleteSpy = spyOn(ecpService, 'delete').and.callFake((name: string) => {
@@ -1066,7 +1081,7 @@ describe('PoolFormComponent', () => {
 
         it('should hide the tooltip when clicking on add', () => {
           modalSpy.and.callFake((): any => ({
-            content: {
+            componentInstance: {
               submitAction: of('someProfile')
             }
           }));

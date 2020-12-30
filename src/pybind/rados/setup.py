@@ -1,13 +1,18 @@
 from __future__ import print_function
+import pkgutil
+if not pkgutil.find_loader('setuptools'):
+    from distutils.core import setup
+    from distutils.extension import Extension
+else:
+    from setuptools import setup
+    from setuptools.extension import Extension
 import distutils.sysconfig
 from distutils.errors import CompileError, LinkError
 from distutils.ccompiler import new_compiler
 from itertools import filterfalse, takewhile
 
 import os
-import pkgutil
 import shutil
-import subprocess
 import sys
 import tempfile
 import textwrap
@@ -40,17 +45,6 @@ def monkey_with_compiler(customize):
             filter_unsupported_flags(compiler.compiler_so[0],
                                      compiler.compiler_so[1:])
     return patched
-
-
-distutils.sysconfig.customize_compiler = \
-    monkey_with_compiler(distutils.sysconfig.customize_compiler)
-
-if not pkgutil.find_loader('setuptools'):
-    from distutils.core import setup
-    from distutils.extension import Extension
-else:
-    from setuptools import setup
-    from setuptools.extension import Extension
 
 
 distutils.sysconfig.customize_compiler = \
@@ -138,10 +132,12 @@ def check_sanity():
         shutil.rmtree(tmp_dir)
 
 
-if 'BUILD_DOC' in os.environ.keys():
-    pass
+if 'BUILD_DOC' in os.environ or 'READTHEDOCS' in os.environ:
+    ext_args = {}
+    cython_constants = dict(BUILD_DOC=True)
 elif check_sanity():
-    pass
+    ext_args = get_python_flags(['rados'])
+    cython_constants = dict(BUILD_DOC=False)
 else:
     sys.exit(1)
 
@@ -191,11 +187,13 @@ setup(
             Extension(
                 "rados",
                 [source],
-                **get_python_flags(['rados'])
+                **ext_args
             )
         ],
+        # use "3str" when Cython 3.0 is available
         compiler_directives={'language_level': sys.version_info.major},
-        build_dir=os.environ.get("CYTHON_BUILD_DIR", None)
+        compile_time_env=cython_constants,
+        build_dir=os.environ.get("CYTHON_BUILD_DIR", None),
     ),
     classifiers=[
         'Intended Audience :: Developers',
@@ -203,9 +201,7 @@ setup(
         'License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)',
         'Operating System :: POSIX :: Linux',
         'Programming Language :: Cython',
-        'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 3.4',
-        'Programming Language :: Python :: 3.5'
+        'Programming Language :: Python :: 3'
     ],
     cmdclass=cmdclass,
 )

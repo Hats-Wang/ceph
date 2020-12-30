@@ -5,22 +5,22 @@ import { ReactiveFormsModule } from '@angular/forms';
 import { Router, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
-import { ButtonsModule } from 'ngx-bootstrap/buttons';
-import { BsDatepickerModule } from 'ngx-bootstrap/datepicker';
-import { BsModalService } from 'ngx-bootstrap/modal';
+import { NgbPopoverModule } from '@ng-bootstrap/ng-bootstrap';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
-import { configureTestBed, FormHelper, i18nProviders } from '../../../../testing/unit-test-helper';
-import { RoleService } from '../../../shared/api/role.service';
-import { SettingsService } from '../../../shared/api/settings.service';
-import { UserService } from '../../../shared/api/user.service';
-import { ComponentsModule } from '../../../shared/components/components.module';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { SharedModule } from '../../../shared/shared.module';
-import { PasswordPolicyService } from './../../../shared/services/password-policy.service';
+import { RoleService } from '~/app/shared/api/role.service';
+import { SettingsService } from '~/app/shared/api/settings.service';
+import { UserService } from '~/app/shared/api/user.service';
+import { ComponentsModule } from '~/app/shared/components/components.module';
+import { LoadingPanelComponent } from '~/app/shared/components/loading-panel/loading-panel.component';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { PasswordPolicyService } from '~/app/shared/services/password-policy.service';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { UserFormComponent } from './user-form.component';
 import { UserFormModel } from './user-form.model';
 
@@ -30,7 +30,7 @@ describe('UserFormComponent', () => {
   let fixture: ComponentFixture<UserFormComponent>;
   let httpTesting: HttpTestingController;
   let userService: UserService;
-  let modalService: BsModalService;
+  let modalService: ModalService;
   let router: Router;
   let formHelper: FormHelper;
 
@@ -44,20 +44,21 @@ describe('UserFormComponent', () => {
     { path: 'users', component: FakeComponent }
   ];
 
-  configureTestBed({
-    imports: [
-      RouterTestingModule.withRoutes(routes),
-      HttpClientTestingModule,
-      ReactiveFormsModule,
-      ComponentsModule,
-      ToastrModule.forRoot(),
-      SharedModule,
-      ButtonsModule.forRoot(),
-      BsDatepickerModule.forRoot()
-    ],
-    declarations: [UserFormComponent, FakeComponent],
-    providers: i18nProviders
-  });
+  configureTestBed(
+    {
+      imports: [
+        RouterTestingModule.withRoutes(routes),
+        HttpClientTestingModule,
+        ReactiveFormsModule,
+        ComponentsModule,
+        ToastrModule.forRoot(),
+        SharedModule,
+        NgbPopoverModule
+      ],
+      declarations: [UserFormComponent, FakeComponent]
+    },
+    [LoadingPanelComponent]
+  );
 
   beforeEach(() => {
     spyOn(TestBed.inject(PasswordPolicyService), 'getHelpText').and.callFake(() => of(''));
@@ -66,7 +67,7 @@ describe('UserFormComponent', () => {
     form = component.userForm;
     httpTesting = TestBed.inject(HttpTestingController);
     userService = TestBed.inject(UserService);
-    modalService = TestBed.inject(BsModalService);
+    modalService = TestBed.inject(ModalService);
     router = TestBed.inject(Router);
     spyOn(router, 'navigate');
     fixture.detectChanges();
@@ -217,8 +218,8 @@ describe('UserFormComponent', () => {
     it('should alert if user is removing needed role permission', () => {
       spyOn(TestBed.inject(AuthStorageService), 'getUsername').and.callFake(() => user.username);
       let modalBodyTpl = null;
-      spyOn(modalService, 'show').and.callFake((_content, config) => {
-        modalBodyTpl = config.initialState.bodyTpl;
+      spyOn(modalService, 'show').and.callFake((_content, initialState) => {
+        modalBodyTpl = initialState.bodyTpl;
       });
       formHelper.setValue('roles', ['read-only']);
       component.submit();

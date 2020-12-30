@@ -2,19 +2,19 @@ import { Component, OnInit } from '@angular/core';
 import { ValidatorFn, Validators } from '@angular/forms';
 import { Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 import { forkJoin as observableForkJoin } from 'rxjs';
 
-import { MgrModuleService } from '../../../shared/api/mgr-module.service';
-import { TelemetryService } from '../../../shared/api/telemetry.service';
-import { NotificationType } from '../../../shared/enum/notification-type.enum';
-import { CdForm } from '../../../shared/forms/cd-form';
-import { CdFormBuilder } from '../../../shared/forms/cd-form-builder';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { NotificationService } from '../../../shared/services/notification.service';
-import { TextToDownloadService } from '../../../shared/services/text-to-download.service';
+import { MgrModuleService } from '~/app/shared/api/mgr-module.service';
+import { TelemetryService } from '~/app/shared/api/telemetry.service';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormBuilder } from '~/app/shared/forms/cd-form-builder';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { TelemetryNotificationService } from '~/app/shared/services/telemetry-notification.service';
 
 @Component({
   selector: 'cd-telemetry',
@@ -44,13 +44,13 @@ export class TelemetryComponent extends CdForm implements OnInit {
   step = 1;
 
   constructor(
+    public actionLabels: ActionLabelsI18n,
     private formBuilder: CdFormBuilder,
     private mgrModuleService: MgrModuleService,
     private notificationService: NotificationService,
     private router: Router,
     private telemetryService: TelemetryService,
-    private i18n: I18n,
-    private textToDownloadService: TextToDownloadService
+    private telemetryNotificationService: TelemetryNotificationService
   ) {
     super();
   }
@@ -149,11 +149,9 @@ export class TelemetryComponent extends CdForm implements OnInit {
     this.mgrModuleService.updateConfig('telemetry', config).subscribe(
       () => {
         this.disableModule(
-          this.i18n(
-            `Your settings have been applied successfully. \
-Due to privacy/legal reasons the Telemetry module is now disabled until you \
-complete the next step and accept the license.`
-          ),
+          $localize`Your settings have been applied successfully. \
+ Due to privacy/legal reasons the Telemetry module is now disabled until you \
+ complete the next step and accept the license.`,
           () => {
             this.getReport();
           }
@@ -166,12 +164,9 @@ complete the next step and accept the license.`
     );
   }
 
-  download(report: object, fileName: string) {
-    this.textToDownloadService.download(JSON.stringify(report, null, 2), fileName);
-  }
-
   disableModule(message: string = null, followUpFunc: Function = null) {
     this.telemetryService.enable(false).subscribe(() => {
+      this.telemetryNotificationService.setVisibility(true);
       if (message) {
         this.notificationService.show(NotificationType.success, message);
       }
@@ -197,9 +192,10 @@ complete the next step and accept the license.`
 
   onSubmit() {
     this.telemetryService.enable().subscribe(() => {
+      this.telemetryNotificationService.setVisibility(false);
       this.notificationService.show(
         NotificationType.success,
-        this.i18n('The Telemetry module has been configured and activated successfully.')
+        $localize`The Telemetry module has been configured and activated successfully.`
       );
       this.router.navigate(['']);
     });

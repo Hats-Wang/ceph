@@ -2,16 +2,16 @@ import { Component, OnInit } from '@angular/core';
 import { FormControl, FormGroup, ValidatorFn } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
+import _ from 'lodash';
 
-import { ConfigurationService } from '../../../../shared/api/configuration.service';
-import { ConfigFormModel } from '../../../../shared/components/config-option/config-option.model';
-import { ConfigOptionTypes } from '../../../../shared/components/config-option/config-option.types';
-import { NotificationType } from '../../../../shared/enum/notification-type.enum';
-import { CdForm } from '../../../../shared/forms/cd-form';
-import { CdFormGroup } from '../../../../shared/forms/cd-form-group';
-import { NotificationService } from '../../../../shared/services/notification.service';
+import { ConfigurationService } from '~/app/shared/api/configuration.service';
+import { ConfigFormModel } from '~/app/shared/components/config-option/config-option.model';
+import { ConfigOptionTypes } from '~/app/shared/components/config-option/config-option.types';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { NotificationService } from '~/app/shared/services/notification.service';
 import { ConfigFormCreateRequestModel } from './configuration-form-create-request.model';
 
 @Component({
@@ -31,11 +31,11 @@ export class ConfigurationFormComponent extends CdForm implements OnInit {
   availSections = ['global', 'mon', 'mgr', 'osd', 'mds', 'client'];
 
   constructor(
+    public actionLabels: ActionLabelsI18n,
     private route: ActivatedRoute,
     private router: Router,
     private configService: ConfigurationService,
-    private notificationService: NotificationService,
-    private i18n: I18n
+    private notificationService: NotificationService
   ) {
     super();
     this.createForm();
@@ -157,7 +157,7 @@ export class ConfigurationFormComponent extends CdForm implements OnInit {
         () => {
           this.notificationService.show(
             NotificationType.success,
-            this.i18n('Updated config option {{name}}', { name: request.name })
+            $localize`Updated config option ${request.name}`
           );
           this.router.navigate(['/configuration']);
         },

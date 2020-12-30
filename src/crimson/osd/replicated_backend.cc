@@ -50,11 +50,14 @@ ReplicatedBackend::_submit_transaction(std::set<pg_shard_t>&& pg_shards,
   if (__builtin_expect(stopping, false)) {
     throw crimson::common::system_shutdown_exception();
   }
+  if (__builtin_expect((bool)peering, false)) {
+    throw crimson::common::actingset_changed(peering->is_primary);
+  }
 
   const ceph_tid_t tid = next_txn_id++;
   auto req_id = osd_op_p.req->get_reqid();
   auto pending_txn =
-    pending_trans.emplace(tid, pending_on_t{pg_shards.size()}).first;
+    pending_trans.emplace(tid, pg_shards.size()).first;
   bufferlist encoded_txn;
   encode(txn, encoded_txn);
 
@@ -78,17 +81,34 @@ ReplicatedBackend::_submit_transaction(std::set<pg_shard_t>&& pg_shards,
         // TODO: set more stuff. e.g., pg_states
         return shard_services.send_to_osd(pg_shard.osd, std::move(m), map_epoch);
       }
-    }).then([&peers=pending_txn->second] {
-      if (--peers.pending == 0) {
-        peers.all_committed.set_value();
+    }).then([this, peers=pending_txn->second.weak_from_this()] {
+      if (!peers) {
+	// for now, only actingset_changed can cause peers
+	// to be nullptr
+	assert(peering);
+	throw crimson::common::actingset_changed(peering->is_primary);
       }
-      return peers.all_committed.get_future();
+      if (--peers->pending == 0) {
+        peers->all_committed.set_value();
+	peers->all_committed = {};
+	return seastar::now();
+      }
+      return peers->all_committed.get_future();
     }).then([pending_txn, this] {
-      pending_txn->second.all_committed = {};
       auto acked_peers = std::move(pending_txn->second.acked_peers);
       pending_trans.erase(pending_txn);
       return seastar::make_ready_future<crimson::osd::acked_peers_t>(std::move(acked_peers));
     });
+}
+
+void ReplicatedBackend::on_actingset_changed(peering_info_t pi)
+{
+  peering.emplace(pi);
+  crimson::common::actingset_changed e_actingset_changed{peering->is_primary};
+  for (auto& [tid, pending_txn] : pending_trans) {
+    pending_txn.all_committed.set_exception(e_actingset_changed);
+  }
+  pending_trans.clear();
 }
 
 void ReplicatedBackend::got_rep_op_reply(const MOSDRepOpReply& reply)
@@ -103,7 +123,8 @@ void ReplicatedBackend::got_rep_op_reply(const MOSDRepOpReply& reply)
     if (peer.shard == reply.from) {
       peer.last_complete_ondisk = reply.get_last_complete_ondisk();
       if (--peers.pending == 0) {
-        peers.all_committed.set_value();    
+        peers.all_committed.set_value();
+        peers.all_committed = {};
       }
       return;
     }
@@ -118,5 +139,6 @@ seastar::future<> ReplicatedBackend::stop()
     pending_on.all_committed.set_exception(
 	crimson::common::system_shutdown_exception());
   }
+  pending_trans.clear();
   return seastar::now();
 }

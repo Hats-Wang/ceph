@@ -34,6 +34,9 @@ using TCachedExtentRef = boost::intrusive_ptr<T>;
 /**
  * CachedExtent
  */
+namespace onode {
+  class DummyNodeExtent;
+}
 class ExtentIndex;
 class CachedExtent : public boost::intrusive_ref_counter<
   CachedExtent, boost::thread_unsafe_counter> {
@@ -47,6 +50,21 @@ class CachedExtent : public boost::intrusive_ref_counter<
     INVALID                // Part of no ExtentIndex set
   } state = extent_state_t::INVALID;
   friend std::ostream &operator<<(std::ostream &, extent_state_t);
+  // allow a dummy onode extent to pretend it is a fresh block
+  friend class onode::DummyNodeExtent;
+
+  uint32_t last_committed_crc = 0;
+
+  // Points at current version while in state MUTATION_PENDING
+  CachedExtentRef prior_instance;
+
+  /**
+   * dirty_from
+   *
+   * When dirty, indiciates the oldest journal entry which mutates
+   * this extent.
+   */
+  journal_seq_t dirty_from;
 
 public:
   /**
@@ -107,14 +125,20 @@ public:
    */
   virtual extent_types_t get_type() const = 0;
 
+  virtual bool is_logical() const {
+    return false;
+  }
+
   friend std::ostream &operator<<(std::ostream &, extent_state_t);
   virtual std::ostream &print_detail(std::ostream &out) const { return out; }
   std::ostream &print(std::ostream &out) const {
     out << "CachedExtent(addr=" << this
 	<< ", type=" << get_type()
 	<< ", version=" << version
+	<< ", dirty_from=" << dirty_from
 	<< ", paddr=" << get_paddr()
 	<< ", state=" << state
+	<< ", last_committed_crc=" << last_committed_crc
 	<< ", refcount=" << use_count();
     print_detail(out);
     return out << ")";
@@ -129,11 +153,24 @@ public:
   virtual ceph::bufferlist get_delta() = 0;
 
   /**
+   * apply_delta
+   *
    * bl is a delta obtained previously from get_delta.  The versions will
    * match.  Implementation should mutate buffer based on bl.  base matches
    * the address passed on_delta_write.
+   *
+   * Implementation *must* use set_last_committed_crc to update the crc to
+   * what the crc of the buffer would have been at submission.  For physical
+   * extents that use base to adjust internal record-relative deltas, this
+   * means that the crc should be of the buffer after applying the delta,
+   * but before that adjustment.  We do it this way because the crc in the
+   * commit path does not yet know the record base address.
+   *
+   * LogicalCachedExtent overrides this method and provides a simpler
+   * apply_delta override for LogicalCachedExtent implementers.
    */
-  virtual void apply_delta(paddr_t base, ceph::bufferlist &bl) = 0;
+  virtual void apply_delta_and_adjust_crc(
+    paddr_t base, const ceph::bufferlist &bl) = 0;
 
   /**
    * Called on dirty CachedExtent implementation after replay.
@@ -156,6 +193,10 @@ public:
   template <typename T>
   TCachedExtentRef<T> cast() {
     return TCachedExtentRef<T>(static_cast<T*>(this));
+  }
+  template <typename T>
+  TCachedExtentRef<const T> cast() const {
+    return TCachedExtentRef<const T>(static_cast<const T*>(this));
   }
 
   /// Returns true if extent is part of an open transaction
@@ -193,6 +234,14 @@ public:
   }
 
   /**
+   * get_dirty_from
+   *
+   * Return journal location of oldest relevant delta.
+   */
+  auto get_dirty_from() const { return dirty_from; }
+
+
+  /**
    * get_paddr
    *
    * Returns current address of extent.  If is_initial_pending(), address will
@@ -209,9 +258,9 @@ public:
   }
 
   /// Returns crc32c of buffer
-  uint32_t get_crc32c(uint32_t crc) {
+  uint32_t get_crc32c() {
     return ceph_crc32c(
-      crc,
+      1,
       reinterpret_cast<const unsigned char *>(get_bptr().c_str()),
       get_length());
   }
@@ -290,10 +339,11 @@ private:
   }
 
 protected:
-  CachedExtent(CachedExtent &&other) = default;
+  CachedExtent(CachedExtent &&other) = delete;
   CachedExtent(ceph::bufferptr &&ptr) : ptr(std::move(ptr)) {}
   CachedExtent(const CachedExtent &other)
     : state(other.state),
+      dirty_from(other.dirty_from),
       ptr(other.ptr.c_str(), other.ptr.length()),
       version(other.version),
       poffset(other.poffset) {}
@@ -301,6 +351,7 @@ protected:
   struct share_buffer_t {};
   CachedExtent(const CachedExtent &other, share_buffer_t) :
     state(other.state),
+    dirty_from(other.dirty_from),
     ptr(other.ptr),
     version(other.version),
     poffset(other.poffset) {}
@@ -310,6 +361,15 @@ protected:
   template <typename T>
   static TCachedExtentRef<T> make_cached_extent_ref(bufferptr &&ptr) {
     return new T(std::move(ptr));
+  }
+
+  CachedExtentRef get_prior_instance() {
+    return prior_instance;
+  }
+
+  /// Sets last_committed_crc
+  void set_last_committed_crc(uint32_t crc) {
+    last_committed_crc = crc;
   }
 
   void set_paddr(paddr_t offset) { poffset = offset; }
@@ -437,6 +497,12 @@ public:
     extent.parent_index = nullptr;
   }
 
+  void replace(CachedExtent &to, CachedExtent &from) {
+    extent_index.replace_node(extent_index.s_iterator_to(from), to);
+    from.parent_index = nullptr;
+    to.parent_index = this;
+  }
+
   bool empty() const {
     return extent_index.empty();
   }
@@ -472,5 +538,120 @@ public:
   }
 };
 
+class LogicalCachedExtent;
+class LBAPin;
+using LBAPinRef = std::unique_ptr<LBAPin>;
+class LBAPin {
+public:
+  virtual void link_extent(LogicalCachedExtent *ref) = 0;
+  virtual void take_pin(LBAPin &pin) = 0;
+  virtual extent_len_t get_length() const = 0;
+  virtual paddr_t get_paddr() const = 0;
+  virtual laddr_t get_laddr() const = 0;
+  virtual LBAPinRef duplicate() const = 0;
+
+  virtual ~LBAPin() {}
+};
+std::ostream &operator<<(std::ostream &out, const LBAPin &rhs);
+
+using lba_pin_list_t = std::list<LBAPinRef>;
+
+std::ostream &operator<<(std::ostream &out, const lba_pin_list_t &rhs);
+
+
+/**
+ * LogicalCachedExtent
+ *
+ * CachedExtent with associated lba mapping.
+ *
+ * Users of TransactionManager should be using extents derived from
+ * LogicalCachedExtent.
+ */
+class LogicalCachedExtent : public CachedExtent {
+public:
+  template <typename... T>
+  LogicalCachedExtent(T&&... t) : CachedExtent(std::forward<T>(t)...) {}
+
+  void set_pin(LBAPinRef &&npin) {
+    assert(!pin);
+    pin = std::move(npin);
+    laddr = pin->get_laddr();
+    pin->link_extent(this);
+  }
+
+  bool has_pin() const {
+    return !!pin;
+  }
+
+  LBAPin &get_pin() {
+    assert(pin);
+    return *pin;
+  }
+
+  laddr_t get_laddr() const {
+    assert(laddr != L_ADDR_NULL);
+    return laddr;
+  }
+
+  void set_laddr(laddr_t nladdr) {
+    laddr = nladdr;
+  }
+
+  void apply_delta_and_adjust_crc(
+    paddr_t base, const ceph::bufferlist &bl) final {
+    apply_delta(bl);
+    set_last_committed_crc(get_crc32c());
+  }
+
+  bool is_logical() const final {
+    return true;
+  }
+
+  std::ostream &print_detail(std::ostream &out) const final;
+protected:
+  virtual void apply_delta(const ceph::bufferlist &bl) = 0;
+  virtual std::ostream &print_detail_l(std::ostream &out) const {
+    return out;
+  }
+
+  virtual void logical_on_delta_write() {}
+
+  void on_delta_write(paddr_t record_block_offset) final {
+    assert(get_prior_instance());
+    pin->take_pin(*(get_prior_instance()->cast<LogicalCachedExtent>()->pin));
+    logical_on_delta_write();
+  }
+
+private:
+  laddr_t laddr = L_ADDR_NULL;
+  LBAPinRef pin;
+};
+
+using LogicalCachedExtentRef = TCachedExtentRef<LogicalCachedExtent>;
+struct ref_laddr_cmp {
+  using is_transparent = laddr_t;
+  bool operator()(const LogicalCachedExtentRef &lhs,
+		  const LogicalCachedExtentRef &rhs) const {
+    return lhs->get_laddr() < rhs->get_laddr();
+  }
+  bool operator()(const laddr_t &lhs,
+		  const LogicalCachedExtentRef &rhs) const {
+    return lhs < rhs->get_laddr();
+  }
+  bool operator()(const LogicalCachedExtentRef &lhs,
+		  const laddr_t &rhs) const {
+    return lhs->get_laddr() < rhs;
+  }
+};
+
+using lextent_set_t = addr_extent_set_base_t<
+  laddr_t,
+  LogicalCachedExtentRef,
+  ref_laddr_cmp
+  >;
+
+template <typename T>
+using lextent_list_t = addr_extent_list_base_t<
+  laddr_t, TCachedExtentRef<T>>;
 
 }

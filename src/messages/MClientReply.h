@@ -135,6 +135,7 @@ struct InodeStat {
   quota_info_t quota;
 
   mds_rank_t dir_pin;
+  std::map<std::string,std::string> snap_metadata;
 
  public:
   InodeStat() {}
@@ -145,7 +146,7 @@ struct InodeStat {
   void decode(ceph::buffer::list::const_iterator &p, const uint64_t features) {
     using ceph::decode;
     if (features == (uint64_t)-1) {
-      DECODE_START(2, p);
+      DECODE_START(5, p);
       decode(vino.ino, p);
       decode(vino.snapid, p);
       decode(rdev, p);
@@ -193,6 +194,12 @@ struct InodeStat {
       if (struct_v >= 3) {
         decode(snap_btime, p);
       } // else remains zero
+      if (struct_v >= 4) {
+        decode(rstat.rsnaps, p);
+      } // else remains zero
+      if (struct_v >= 5) {
+        decode(snap_metadata, p);
+      }
       DECODE_FINISH(p);
     }
     else {
@@ -284,7 +291,7 @@ public:
 } __attribute__ ((__may_alias__));
 WRITE_CLASS_ENCODER(openc_response_t)
 
-class MClientReply : public SafeMessage {
+class MClientReply final : public SafeMessage {
 public:
   // reply data
   struct ceph_mds_reply_head head {};
@@ -317,7 +324,7 @@ protected:
     head.result = result;
     head.safe = 1;
   }
-  ~MClientReply() override {}
+  ~MClientReply() final {}
 
 public:
   std::string_view get_type_name() const override { return "creply"; }
@@ -357,7 +364,7 @@ public:
 
   // dir contents
   void set_extra_bl(ceph::buffer::list& bl) {
-    extra_bl.claim(bl);
+    extra_bl = std::move(bl);
   }
   ceph::buffer::list& get_extra_bl() {
     return extra_bl;
@@ -368,7 +375,7 @@ public:
 
   // trace
   void set_trace(ceph::buffer::list& bl) {
-    trace_bl.claim(bl);
+    trace_bl = std::move(bl);
   }
   ceph::buffer::list& get_trace_bl() {
     return trace_bl;

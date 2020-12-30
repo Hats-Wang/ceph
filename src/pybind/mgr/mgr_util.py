@@ -1,21 +1,26 @@
+import os
+
+if 'UNITTEST' in os.environ:
+    import tests
+
 import cephfs
 import contextlib
 import datetime
 import errno
-import os
 import socket
 import time
 import logging
 import sys
 from threading import Lock, Condition, Event
 from typing import no_type_check
+from functools import wraps
 if sys.version_info >= (3, 3):
     from threading import Timer
 else:
     from threading import _Timer as Timer
 
 try:
-    from typing import Tuple
+    from typing import Tuple, Any, Callable, Optional, Dict
 except ImportError:
     TYPE_CHECKING = False  # just for type checking
 
@@ -242,6 +247,25 @@ class CephfsClient(object):
         # second, delete all libcephfs handles from connection pool
         self.connection_pool.del_all_handles()
 
+    def get_fs(self, fs_name):
+        fs_map = self.mgr.get('fs_map')
+        for fs in fs_map['filesystems']:
+            if fs['mdsmap']['fs_name'] == fs_name:
+                return fs
+        return None
+
+    def get_mds_names(self, fs_name):
+        fs = self.get_fs(fs_name)
+        if fs is None:
+            return []
+        return [mds['name'] for mds in fs['mdsmap']['info'].values()]
+
+    def get_metadata_pool(self, fs_name):
+        fs = self.get_fs(fs_name)
+        if fs:
+            return fs['mdsmap']['metadata_pool']
+        return None
+
 
 @contextlib.contextmanager
 def open_filesystem(fsc, fs_name):
@@ -346,8 +370,8 @@ def get_default_addr():
             with contextlib.closing(sock):
                 sock.bind(("::1", 0))
                 return True
-        except (AttributeError, socket.error) as e:
-           return False
+        except (AttributeError, socket.error):
+            return False
 
     try:
         return get_default_addr.result  # type: ignore
@@ -361,22 +385,53 @@ class ServerConfigException(Exception):
     pass
 
 
-def create_self_signed_cert(organisation='Ceph', common_name='mgr') -> Tuple[str, str]:
+def create_self_signed_cert(organisation: str = 'Ceph',
+                            common_name: str = 'mgr',
+                            dname: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
     """Returns self-signed PEM certificates valid for 10 years.
-    :return cert, pkey
+    
+    The optional dname parameter provides complete control of the cert/key
+    creation by supporting all valid RDNs via a dictionary. However, if dname
+    is not provided the default O and CN settings will be applied.
+
+    :param organisation: String representing the Organisation(O) RDN (default='Ceph')
+    :param common_name: String representing the Common Name(CN) RDN (default='mgr')
+    :param dname: Optional dictionary containing RDNs to use for crt/key generation 
+
+    :return: ssl crt and key in utf-8 format
+
+    :raises ValueError: if the dname parameter received contains invalid RDNs
+
     """
 
     from OpenSSL import crypto
     from uuid import uuid4
 
+    # RDN = Relative Distinguished Name
+    valid_RDN_list = ['C', 'ST', 'L', 'O', 'OU', 'CN', 'emailAddress']
+
     # create a key pair
     pkey = crypto.PKey()
     pkey.generate_key(crypto.TYPE_RSA, 2048)
 
+    # Create a "subject" object
+    req = crypto.X509Req()
+    subj = req.get_subject()
+
+    if dname:
+        # dname received, so check it contains valid RDNs
+        if not all(field in valid_RDN_list for field in dname):
+            raise ValueError("Invalid DNAME received. Valid DNAME fields are {}".format(', '.join(valid_RDN_list)))
+    else:
+        dname = {"O": organisation, "CN": common_name}
+
+    # populate the subject with the dname settings
+    for k, v in dname.items():
+        setattr(subj, k, v)
+
     # create a self-signed cert
     cert = crypto.X509()
-    cert.get_subject().O = organisation
-    cert.get_subject().CN = common_name
+    cert.set_subject(req.get_subject())
     cert.set_serial_number(int(uuid4()))
     cert.gmtime_adj_notBefore(0)
     cert.gmtime_adj_notAfter(10 * 365 * 24 * 60 * 60)  # 10 years
@@ -491,6 +546,7 @@ def verify_tls_files(cert_fname, pkey_fname):
             'Private key {} and certificate {} do not match up: {}'.format(
                 pkey_fname, cert_fname, str(e)))
 
+
 def get_most_recent_rate(rates):
     """ Get most recent rate from rates
 
@@ -541,6 +597,7 @@ def get_time_series_rates(data):
     return [(data2[0], _derivative(data1, data2)) for data1, data2 in
             _pairwise(data)]
 
+
 def _filter_time_series(data):
     """ Filters time series data
 
@@ -585,6 +642,7 @@ def _filter_time_series(data):
     filtered.append(data[-1])
     return filtered
 
+
 def _derivative(p1, p2):
     """ Derivative between two time series data points
 
@@ -605,6 +663,7 @@ def _derivative(p1, p2):
     """
     return (p2[1] - p1[1]) / float(p2[0] - p1[0])
 
+
 def _pairwise(iterable):
     it = iter(iterable)
     a = next(it, None)
@@ -612,6 +671,7 @@ def _pairwise(iterable):
     for b in it:
         yield (a, b)
         a = b
+
 
 def to_pretty_timedelta(n):
     if n < datetime.timedelta(seconds=120):
@@ -627,3 +687,24 @@ def to_pretty_timedelta(n):
     if n < datetime.timedelta(days=365*2):
         return str(n.days // 30) + 'M'
     return str(n.days // 365) + 'y'
+
+
+def profile_method(skip_attribute=False):
+    """
+    Decorator for methods of the Module class. Logs the name of the given
+    function f with the time it takes to execute it.
+    """
+    def outer(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            self = args[0]
+            t = time.time()
+            self.log.debug('Starting method {}.'.format(f.__name__))
+            result = f(*args, **kwargs)
+            duration = time.time() - t
+            if not skip_attribute:
+                wrapper._execution_duration = duration  # type: ignore
+            self.log.debug('Method {} ran {:.3f} seconds.'.format(f.__name__, duration))
+            return result
+        return wrapper
+    return outer

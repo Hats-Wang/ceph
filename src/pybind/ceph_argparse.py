@@ -564,11 +564,11 @@ class CephFragment(CephArgtype):
             raise ArgumentFormat("{0} not a hex integer".format(val))
         try:
             int(val)
-        except:
+        except ValueError:
             raise ArgumentFormat('can\'t convert {0} to integer'.format(val))
         try:
             int(bits)
-        except:
+        except ValueError:
             raise ArgumentFormat('can\'t convert {0} to integer'.format(bits))
         self.val = s
 
@@ -1077,15 +1077,12 @@ def validate(args, signature, flags=0, partial=False):
             # Have an arg; validate it
             try:
                 validate_one(myarg, desc)
-                valid = True
             except ArgumentError as e:
-                valid = False
-
                 # argument mismatch
                 if not desc.req:
                     # if not required, just push back; it might match
                     # the next arg
-                    save_exception = [ myarg, e ]
+                    save_exception = [myarg, e]
                     myargs.insert(0, myarg)
                     break
                 else:
@@ -1171,9 +1168,9 @@ def validate_command(sigdict, args, verbose=False):
     # (relies on a cmdsig being key,val where val is a list of len 1)
 
     def grade(cmd):
-      # prefer optional arguments over required ones
-      sigs = cmd['sig']
-      return sum(map(lambda sig: sig.req, sigs))
+        # prefer optional arguments over required ones
+        sigs = cmd['sig']
+        return sum(map(lambda sig: sig.req, sigs))
 
     bestcmds_sorted = sorted(bestcmds, key=grade)
     if verbose:
@@ -1225,7 +1222,6 @@ def validate_command(sigdict, args, verbose=False):
         for cmd in bestcmds:
             print(concise_sig(cmd['sig']), file=sys.stderr)
     return valid_dict
-
 
 
 def find_cmd_target(childargs):
@@ -1312,14 +1308,15 @@ class RadosThread(threading.Thread):
 
 
 def run_in_thread(func, *args, **kwargs):
-    interrupt = False
     timeout = kwargs.pop('timeout', 0)
     if timeout == 0 or timeout == None:
         # python threading module will just get blocked if timeout is `None`,
         # otherwise it will keep polling until timeout or thread stops.
-        # wait for INT32_MAX, as python 3.6.8 use int32_t to present the
-        # timeout in integer when converting it to nanoseconds
-        timeout = (1 << (32 - 1)) - 1
+        # timeout in integer when converting it to nanoseconds, but since
+        # python3 uses `int64_t` for the deadline before timeout expires,
+        # we have to use a safe value which does not overflow after being
+        # added to current time in microseconds.
+        timeout = 24 * 60 * 60
     t = RadosThread(func, *args, **kwargs)
 
     # allow the main thread to exit (presumably, avoid a join() on this
@@ -1402,11 +1399,11 @@ def send_command(cluster, target=('mon', ''), cmd=None, inbuf=b'', timeout=0,
             # pgid will already be in the command for the pg <pgid>
             # form, but for tell <pgid>, we need to put it in
             if cmd:
-                cmddict = json.loads(cmd[0])
+                cmddict = json.loads(cmd)
                 cmddict['pgid'] = pgid
             else:
                 cmddict = dict(pgid=pgid)
-            cmd = [json.dumps(cmddict)]
+            cmd = json.dumps(cmddict)
             if verbose:
                 print('submit {0} for pgid {1}'.format(cmd, pgid),
                       file=sys.stderr)
@@ -1488,7 +1485,7 @@ def json_command(cluster, target=('mon', ''), prefix=None, argdict=None,
                 # use the target we were originally given
                 pass
         ret, outbuf, outs = send_command_retry(cluster,
-                                               target, [json.dumps(cmddict)],
+                                               target, json.dumps(cmddict),
                                                inbuf, timeout, verbose)
 
     except Exception as e:

@@ -11,28 +11,6 @@
 #include "common/CDC.h"
 #include "gtest/gtest.h"
 
-void generate_buffer(int size, bufferlist *outbl, int seed = 0)
-{
-  std::mt19937_64 engine, engine2;
-  engine.seed(seed);
-  engine2.seed(seed);
-
-  // assemble from randomly-sized segments!
-  outbl->clear();
-  auto left = size;
-  while (left) {
-    size_t l = std::min<size_t>((engine2() & 0xffff0) + 16, left);
-    left -= l;
-    bufferptr p(l);
-    p.set_length(l);
-    char *b = p.c_str();
-    for (size_t i = 0; i < l / sizeof(uint64_t); ++i) {
-      ((uint64_t*)b)[i] = engine();
-    }
-    outbl->append(p);
-  }
-}
-
 class CDCTest : public ::testing::Test,
 		public ::testing::WithParamInterface<const char*> {
 public:
@@ -40,7 +18,7 @@ public:
 
   CDCTest() {
     auto plugin = GetParam();
-    cdc = std::move(CDC::create(plugin, 18));
+    cdc = CDC::create(plugin, 18);
   }
 };
 

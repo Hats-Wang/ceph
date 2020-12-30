@@ -39,6 +39,9 @@ class PyModuleRegistry;
 
 class ActivePyModules
 {
+  // module class instances not yet created
+  std::set<std::string, std::less<>> pending_modules;
+  // module class instances already created
   std::map<std::string, std::shared_ptr<ActivePyModule>> modules;
   PyModuleConfig &module_config;
   std::map<std::string, std::string> store_cache;
@@ -107,6 +110,12 @@ public:
   void remove_osd_perf_query(MetricQueryID query_id);
   PyObject *get_osd_perf_counters(MetricQueryID query_id);
 
+  MetricQueryID add_mds_perf_query(
+      const MDSPerfMetricQuery &query,
+      const std::optional<MDSPerfMetricLimit> &limit);
+  void remove_mds_perf_query(MetricQueryID query_id);
+  PyObject *get_mds_perf_counters(MetricQueryID query_id);
+
   bool get_store(const std::string &module_name,
       const std::string &key, std::string *val) const;
   PyObject *get_store_prefix(const std::string &module_name,
@@ -129,7 +138,8 @@ public:
 
   void update_progress_event(const std::string& evid,
 			     const std::string& desc,
-			     float progress);
+			     float progress,
+			     bool add_to_ceph_s);
   void complete_progress_event(const std::string& evid);
   void clear_all_progress_events();
   void get_progress_events(std::map<std::string,ProgressEvent>* events);
@@ -158,6 +168,9 @@ public:
                   const std::string &notify_id);
   void notify_all(const LogEntry &log_entry);
 
+  bool is_pending(std::string_view name) const {
+    return pending_modules.count(name) > 0;
+  }
   bool module_exists(const std::string &name) const
   {
     return modules.count(name) > 0;

@@ -11,6 +11,7 @@
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/internal.h"
+#include "librbd/Journal.h"
 #include "librbd/Operations.h"
 #include "librbd/api/Io.h"
 #include "librbd/io/AioCompletion.h"
@@ -35,7 +36,7 @@ int flush(librbd::ImageCtx *image_ctx) {
   C_SaferCond ctx;
   auto aio_comp = librbd::io::AioCompletion::create_and_start(
     &ctx, image_ctx, librbd::io::AIO_TYPE_FLUSH);
-  auto req = librbd::io::ImageDispatchSpec<>::create_flush(
+  auto req = librbd::io::ImageDispatchSpec::create_flush(
     *image_ctx, librbd::io::IMAGE_DISPATCH_LAYER_INTERNAL_START, aio_comp,
     librbd::io::FLUSH_SOURCE_INTERNAL, {});
   req->send();
@@ -79,11 +80,14 @@ public:
         cct, "rbd_mirror_concurrent_image_syncs");
 
     m_instance_watcher = rbd::mirror::InstanceWatcher<>::create(
-        m_local_io_ctx, m_threads->work_queue, nullptr, m_image_sync_throttler);
+      m_local_io_ctx, *m_threads->asio_engine, nullptr, m_image_sync_throttler);
     m_instance_watcher->handle_acquire_leader();
 
+    ContextWQ* context_wq;
+    librbd::Journal<>::get_work_queue(cct, &context_wq);
+
     m_remote_journaler = new ::journal::Journaler(
-      m_threads->work_queue, m_threads->timer, &m_threads->timer_lock,
+      context_wq, m_threads->timer, &m_threads->timer_lock,
       m_remote_io_ctx, m_remote_image_ctx->id, "mirror-uuid", {}, nullptr);
 
     m_client_meta = {"image-id"};

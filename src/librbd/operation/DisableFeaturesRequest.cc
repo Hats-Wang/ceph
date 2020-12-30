@@ -13,6 +13,7 @@
 #include "librbd/image/SetFlagsRequest.h"
 #include "librbd/io/ImageDispatcherInterface.h"
 #include "librbd/journal/RemoveRequest.h"
+#include "librbd/journal/TypeTraits.h"
 #include "librbd/mirror/DisableRequest.h"
 #include "librbd/object_map/RemoveRequest.h"
 
@@ -401,9 +402,12 @@ void DisableFeaturesRequest<I>::send_remove_journal() {
     DisableFeaturesRequest<I>,
     &DisableFeaturesRequest<I>::handle_remove_journal>(this);
 
+  typename journal::TypeTraits<I>::ContextWQ* context_wq;
+  Journal<I>::get_work_queue(cct, &context_wq);
+
   journal::RemoveRequest<I> *req = journal::RemoveRequest<I>::create(
     image_ctx.md_ctx, image_ctx.id, librbd::Journal<>::IMAGE_CLIENT_ID,
-    image_ctx.op_work_queue, ctx);
+    context_wq, ctx);
 
   req->send();
 }
@@ -480,7 +484,7 @@ Context *DisableFeaturesRequest<I>::handle_remove_object_map(int *result) {
   CephContext *cct = image_ctx.cct;
   ldout(cct, 20) << this << " " << __func__ << ": r=" << *result << dendl;
 
-  if (*result < 0) {
+  if (*result < 0 && *result != -ENOENT) {
     lderr(cct) << "failed to remove object map: " << cpp_strerror(*result) << dendl;
     return handle_finish(*result);
   }

@@ -4,12 +4,8 @@ import { FormsModule, ReactiveFormsModule } from '@angular/forms';
 import { RouterModule } from '@angular/router';
 
 import { NgbNavModule, NgbProgressbarModule } from '@ng-bootstrap/ng-bootstrap';
-import { NgBootstrapFormValidationModule } from 'ng-bootstrap-form-validation';
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
-import { ModalModule } from 'ngx-bootstrap/modal';
 
-import { SharedModule } from '../../../shared/shared.module';
-
+import { SharedModule } from '~/app/shared/shared.module';
 import { BootstrapCreateModalComponent } from './bootstrap-create-modal/bootstrap-create-modal.component';
 import { BootstrapImportModalComponent } from './bootstrap-import-modal/bootstrap-import-modal.component';
 import { DaemonListComponent } from './daemon-list/daemon-list.component';
@@ -22,14 +18,6 @@ import { PoolEditPeerModalComponent } from './pool-edit-peer-modal/pool-edit-pee
 import { PoolListComponent } from './pool-list/pool-list.component';
 
 @NgModule({
-  entryComponents: [
-    BootstrapCreateModalComponent,
-    BootstrapImportModalComponent,
-    EditSiteNameModalComponent,
-    OverviewComponent,
-    PoolEditModeModalComponent,
-    PoolEditPeerModalComponent
-  ],
   imports: [
     CommonModule,
     SharedModule,
@@ -37,10 +25,7 @@ import { PoolListComponent } from './pool-list/pool-list.component';
     RouterModule,
     FormsModule,
     ReactiveFormsModule,
-    NgbProgressbarModule,
-    BsDropdownModule.forRoot(),
-    ModalModule.forRoot(),
-    NgBootstrapFormValidationModule
+    NgbProgressbarModule
   ],
   declarations: [
     BootstrapCreateModalComponent,

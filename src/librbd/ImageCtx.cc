@@ -4,13 +4,15 @@
 #include <boost/assign/list_of.hpp>
 #include <stddef.h>
 
+#include "include/neorados/RADOS.hpp"
+
 #include "common/ceph_context.h"
 #include "common/dout.h"
 #include "common/errno.h"
 #include "common/perf_counters.h"
-#include "common/WorkQueue.h"
 #include "common/Timer.h"
 
+#include "librbd/AsioEngine.h"
 #include "librbd/AsyncRequest.h"
 #include "librbd/ExclusiveLock.h"
 #include "librbd/internal.h"
@@ -24,6 +26,7 @@
 #include "librbd/PluginRegistry.h"
 #include "librbd/Types.h"
 #include "librbd/Utils.h"
+#include "librbd/asio/ContextWQ.h"
 #include "librbd/exclusive_lock/AutomaticPolicy.h"
 #include "librbd/exclusive_lock/StandardPolicy.h"
 #include "librbd/io/AioCompletion.h"
@@ -35,7 +38,6 @@
 #include "librbd/operation/ResizeRequest.h"
 
 #include "osdc/Striper.h"
-#include <boost/bind.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 
 #define dout_subsys ceph_subsys_rbd
@@ -56,26 +58,6 @@ namespace librbd {
 
 namespace {
 
-class ThreadPoolSingleton : public ThreadPool {
-public:
-  ContextWQ *op_work_queue;
-
-  explicit ThreadPoolSingleton(CephContext *cct)
-    : ThreadPool(cct, "librbd::thread_pool", "tp_librbd", 1,
-                 "rbd_op_threads"),
-      op_work_queue(new ContextWQ("librbd::op_work_queue",
-                                  cct->_conf.get_val<uint64_t>("rbd_op_thread_timeout"),
-                                  this)) {
-    start();
-  }
-  ~ThreadPoolSingleton() override {
-    op_work_queue->drain();
-    delete op_work_queue;
-
-    stop();
-  }
-};
-
 class SafeTimerSingleton : public SafeTimer {
 public:
   ceph::mutex lock = ceph::make_mutex("librbd::SafeTimerSingleton::lock");
@@ -89,6 +71,12 @@ public:
     shutdown();
   }
 };
+
+librados::IoCtx duplicate_io_ctx(librados::IoCtx& io_ctx) {
+  librados::IoCtx dup_io_ctx;
+  dup_io_ctx.dup(io_ctx);
+  return dup_io_ctx;
+}
 
 } // anonymous namespace
 
@@ -105,6 +93,10 @@ public:
       read_only_flags(ro ? IMAGE_READ_ONLY_FLAG_USER : 0U),
       exclusive_locked(false),
       name(image_name),
+      asio_engine(std::make_shared<AsioEngine>(p)),
+      rados_api(asio_engine->get_rados_api()),
+      data_ctx(duplicate_io_ctx(p)),
+      md_ctx(duplicate_io_ctx(p)),
       image_watcher(NULL),
       journal(NULL),
       owner_lock(ceph::make_shared_mutex(util::unique_lock_name("librbd::ImageCtx::owner_lock", this))),
@@ -123,23 +115,24 @@ public:
       state(new ImageState<>(this)),
       operations(new Operations<>(*this)),
       exclusive_lock(nullptr), object_map(nullptr),
-      op_work_queue(nullptr),
+      op_work_queue(asio_engine->get_work_queue()),
       plugin_registry(new PluginRegistry<ImageCtx>(this)),
-      external_callback_completions(32),
       event_socket_completions(32),
       asok_hook(nullptr),
       trace_endpoint("librbd")
   {
-    md_ctx.dup(p);
-    data_ctx.dup(p);
+    ldout(cct, 10) << this << " " << __func__ << ": "
+                   << "image_name=" << image_name << ", "
+                   << "image_id=" << image_id << dendl;
+
     if (snap)
       snap_name = snap;
+
+    rebuild_data_io_context();
 
     // FIPS zeroization audit 20191117: this memset is not security related.
     memset(&header, 0, sizeof(header));
 
-    ThreadPool *thread_pool;
-    get_thread_pool_instance(cct, &thread_pool, &op_work_queue);
     io_image_dispatcher = new io::ImageDispatcher<ImageCtx>(this);
     io_object_dispatcher = new io::ObjectDispatcher<ImageCtx>(this);
 
@@ -158,6 +151,9 @@ public:
   }
 
   ImageCtx::~ImageCtx() {
+    ldout(cct, 10) << this << " " << __func__ << dendl;
+
+    ceph_assert(config_watcher == nullptr);
     ceph_assert(image_watcher == NULL);
     ceph_assert(exclusive_lock == NULL);
     ceph_assert(object_map == NULL);
@@ -336,6 +332,7 @@ public:
       snap_exists = true;
       if (data_ctx.is_valid()) {
         data_ctx.snap_set_read(snap_id);
+        rebuild_data_io_context();
       }
       return 0;
     }
@@ -351,6 +348,7 @@ public:
     snap_exists = true;
     if (data_ctx.is_valid()) {
       data_ctx.snap_set_read(snap_id);
+      rebuild_data_io_context();
     }
   }
 
@@ -728,15 +726,11 @@ public:
                                 bool thread_safe) {
     ldout(cct, 20) << __func__ << dendl;
 
-    // reset settings back to global defaults
-    for (auto& key : config_overrides) {
-      std::string value;
-      int r = cct->_conf.get_val(key, &value);
-      ceph_assert(r == 0);
+    std::unique_lock image_locker(image_lock);
 
-      config.set_val(key, value);
-    }
+    // reset settings back to global defaults
     config_overrides.clear();
+    config.set_config_values(cct->_conf.get_config_values());
 
     // extract config overrides
     for (auto meta_pair : meta) {
@@ -766,6 +760,8 @@ public:
       }
     }
 
+    image_locker.unlock();
+
 #define ASSIGN_OPTION(param, type)              \
     param = config.get_val<type>("rbd_"#param)
 
@@ -773,8 +769,6 @@ public:
     ASSIGN_OPTION(non_blocking_aio, bool);
     ASSIGN_OPTION(cache, bool);
     ASSIGN_OPTION(sparse_read_threshold_bytes, Option::size_t);
-    ASSIGN_OPTION(readahead_max_bytes, Option::size_t);
-    ASSIGN_OPTION(readahead_disable_after_bytes, Option::size_t);
     ASSIGN_OPTION(clone_copy_on_read, bool);
     ASSIGN_OPTION(enable_alloc_hint, bool);
     ASSIGN_OPTION(mirroring_replay_delay, uint64_t);
@@ -783,6 +777,12 @@ public:
     ASSIGN_OPTION(skip_partial_discard, bool);
     ASSIGN_OPTION(discard_granularity_bytes, uint64_t);
     ASSIGN_OPTION(blkin_trace_all, bool);
+
+    auto cache_policy = config.get_val<std::string>("rbd_cache_policy");
+    if (cache_policy == "writethrough" || cache_policy == "writeback") {
+      ASSIGN_OPTION(readahead_max_bytes, Option::size_t);
+      ASSIGN_OPTION(readahead_disable_after_bytes, Option::size_t);
+    }
 
 #undef ASSIGN_OPTION
 
@@ -913,14 +913,28 @@ public:
     journal_policy = policy;
   }
 
-  void ImageCtx::get_thread_pool_instance(CephContext *cct,
-                                          ThreadPool **thread_pool,
-                                          ContextWQ **op_work_queue) {
-    auto thread_pool_singleton =
-      &cct->lookup_or_create_singleton_object<ThreadPoolSingleton>(
-	"librbd::thread_pool", false, cct);
-    *thread_pool = thread_pool_singleton;
-    *op_work_queue = thread_pool_singleton->op_work_queue;
+  void ImageCtx::rebuild_data_io_context() {
+    auto ctx = std::make_shared<neorados::IOContext>(
+      data_ctx.get_id(), data_ctx.get_namespace());
+    if (snap_id != CEPH_NOSNAP) {
+      ctx->read_snap(snap_id);
+    }
+    if (!snapc.snaps.empty()) {
+      ctx->write_snap_context(
+        {{snapc.seq, {snapc.snaps.begin(), snapc.snaps.end()}}});
+    }
+
+    // atomically reset the data IOContext to new version
+    atomic_store(&data_io_context, ctx);
+  }
+
+  IOContext ImageCtx::get_data_io_context() const {
+    return atomic_load(&data_io_context);
+  }
+
+  IOContext ImageCtx::duplicate_data_io_context() const {
+    auto ctx = get_data_io_context();
+    return std::make_shared<neorados::IOContext>(*ctx);
   }
 
   void ImageCtx::get_timer_instance(CephContext *cct, SafeTimer **timer,

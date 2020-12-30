@@ -1,5 +1,6 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { ComponentFixture, fakeAsync, TestBed, tick } from '@angular/core/testing';
+import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
 import { NgbProgressbarModule } from '@ng-bootstrap/ng-bootstrap';
@@ -7,20 +8,19 @@ import { ClickOutsideModule } from 'ng-click-outside';
 import { ToastrModule } from 'ngx-toastr';
 import { SimplebarAngularModule } from 'simplebar-angular';
 
-import { NoopAnimationsModule } from '@angular/platform-browser/animations';
-import { configureTestBed, i18nProviders } from '../../../../testing/unit-test-helper';
-import { PrometheusService } from '../../api/prometheus.service';
-import { RbdService } from '../../api/rbd.service';
-import { SettingsService } from '../../api/settings.service';
-import { NotificationType } from '../../enum/notification-type.enum';
-import { ExecutingTask } from '../../models/executing-task';
-import { Permissions } from '../../models/permissions';
-import { PipesModule } from '../../pipes/pipes.module';
-import { AuthStorageService } from '../../services/auth-storage.service';
-import { NotificationService } from '../../services/notification.service';
-import { PrometheusAlertService } from '../../services/prometheus-alert.service';
-import { PrometheusNotificationService } from '../../services/prometheus-notification.service';
-import { SummaryService } from '../../services/summary.service';
+import { PrometheusService } from '~/app/shared/api/prometheus.service';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { SettingsService } from '~/app/shared/api/settings.service';
+import { NotificationType } from '~/app/shared/enum/notification-type.enum';
+import { ExecutingTask } from '~/app/shared/models/executing-task';
+import { Permissions } from '~/app/shared/models/permissions';
+import { PipesModule } from '~/app/shared/pipes/pipes.module';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { NotificationService } from '~/app/shared/services/notification.service';
+import { PrometheusAlertService } from '~/app/shared/services/prometheus-alert.service';
+import { PrometheusNotificationService } from '~/app/shared/services/prometheus-notification.service';
+import { SummaryService } from '~/app/shared/services/summary.service';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { NotificationsSidebarComponent } from './notifications-sidebar.component';
 
 describe('NotificationsSidebarComponent', () => {
@@ -39,14 +39,7 @@ describe('NotificationsSidebarComponent', () => {
       ClickOutsideModule
     ],
     declarations: [NotificationsSidebarComponent],
-    providers: [
-      i18nProviders,
-      PrometheusService,
-      SettingsService,
-      SummaryService,
-      NotificationService,
-      RbdService
-    ]
+    providers: [PrometheusService, SettingsService, SummaryService, NotificationService, RbdService]
   });
 
   beforeEach(() => {

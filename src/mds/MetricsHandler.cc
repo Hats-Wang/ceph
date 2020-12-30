@@ -34,13 +34,16 @@ bool MetricsHandler::ms_dispatch2(const ref_t<Message> &m) {
       m->get_connection()->get_peer_type() == CEPH_ENTITY_TYPE_CLIENT) {
     handle_client_metrics(ref_cast<MClientMetrics>(m));
     return true;
-  }
-  if (m->get_type() == MSG_MDS_PING &&
-      m->get_connection()->get_peer_type() == CEPH_ENTITY_TYPE_MDS) {
+  } else if (m->get_type() == MSG_MDS_PING &&
+             m->get_connection()->get_peer_type() == CEPH_ENTITY_TYPE_MDS) {
+    const Message *msg = m.get();
+    const MMDSOp *op = dynamic_cast<const MMDSOp*>(msg);
+    if (!op)
+      dout(0) << typeid(*msg).name() << " is not an MMDSOp type" << dendl;
+    ceph_assert(op);
     handle_mds_ping(ref_cast<MMDSPing>(m));
     return true;
   }
-
   return false;
 }
 
@@ -120,6 +123,7 @@ void MetricsHandler::remove_session(Session *session) {
   metrics.read_latency_metric = { };
   metrics.write_latency_metric = { };
   metrics.metadata_latency_metric = { };
+  metrics.dentry_lease_metric = { };
   metrics.update_type = UPDATE_TYPE_REMOVE;
 }
 
@@ -129,9 +133,20 @@ void MetricsHandler::set_next_seq(version_t seq) {
   next_seq = seq;
 }
 
+void MetricsHandler::reset_seq() {
+  dout(10) << ": last_updated_seq=" << last_updated_seq << dendl;
+
+  set_next_seq(0);
+  for (auto &[client, metrics_v] : client_metrics_map) {
+    dout(10) << ": reset last updated seq for client addr=" << client << dendl;
+    metrics_v.first = last_updated_seq;
+  }
+}
+
 void MetricsHandler::handle_payload(Session *session, const CapInfoPayload &payload) {
-  dout(20) << ": session=" << session << ", hits=" << payload.cap_hits << ", misses="
-           << payload.cap_misses << dendl;
+  dout(20) << ": type=" << static_cast<ClientMetricType>(CapInfoPayload::METRIC_TYPE)
+	   << ", session=" << session << ", hits=" << payload.cap_hits << ", misses="
+	   << payload.cap_misses << dendl;
 
   auto it = client_metrics_map.find(session->info.inst);
   if (it == client_metrics_map.end()) {
@@ -145,7 +160,8 @@ void MetricsHandler::handle_payload(Session *session, const CapInfoPayload &payl
 }
 
 void MetricsHandler::handle_payload(Session *session, const ReadLatencyPayload &payload) {
-  dout(20) << ": session=" << session << ", latency=" << payload.lat << dendl;
+  dout(20) << ": type=" << static_cast<ClientMetricType>(ReadLatencyPayload::METRIC_TYPE)
+	   << ", session=" << session << ", latency=" << payload.lat << dendl;
 
   auto it = client_metrics_map.find(session->info.inst);
   if (it == client_metrics_map.end()) {
@@ -155,10 +171,12 @@ void MetricsHandler::handle_payload(Session *session, const ReadLatencyPayload &
   auto &metrics = it->second.second;
   metrics.update_type = UPDATE_TYPE_REFRESH;
   metrics.read_latency_metric.lat = payload.lat;
+  metrics.read_latency_metric.updated = true;
 }
 
 void MetricsHandler::handle_payload(Session *session, const WriteLatencyPayload &payload) {
-  dout(20) << ": session=" << session << ", latency=" << payload.lat << dendl;
+  dout(20) << ": type=" << static_cast<ClientMetricType>(WriteLatencyPayload::METRIC_TYPE)
+	   << ", session=" << session << ", latency=" << payload.lat << dendl;
 
   auto it = client_metrics_map.find(session->info.inst);
   if (it == client_metrics_map.end()) {
@@ -168,10 +186,12 @@ void MetricsHandler::handle_payload(Session *session, const WriteLatencyPayload 
   auto &metrics = it->second.second;
   metrics.update_type = UPDATE_TYPE_REFRESH;
   metrics.write_latency_metric.lat = payload.lat;
+  metrics.write_latency_metric.updated = true;
 }
 
 void MetricsHandler::handle_payload(Session *session, const MetadataLatencyPayload &payload) {
-  dout(20) << ": session=" << session << ", latency=" << payload.lat << dendl;
+  dout(20) << ": type=" << static_cast<ClientMetricType>(MetadataLatencyPayload::METRIC_TYPE)
+	   << ", session=" << session << ", latenc]y=" << payload.lat << dendl;
 
   auto it = client_metrics_map.find(session->info.inst);
   if (it == client_metrics_map.end()) {
@@ -181,10 +201,28 @@ void MetricsHandler::handle_payload(Session *session, const MetadataLatencyPaylo
   auto &metrics = it->second.second;
   metrics.update_type = UPDATE_TYPE_REFRESH;
   metrics.metadata_latency_metric.lat = payload.lat;
+  metrics.metadata_latency_metric.updated = true;
+}
+
+void MetricsHandler::handle_payload(Session *session, const DentryLeasePayload &payload) {
+  dout(20) << ": type=" << static_cast<ClientMetricType>(DentryLeasePayload::METRIC_TYPE)
+	   << ", session=" << session << ", hits=" << payload.dlease_hits << ", misses="
+	   << payload.dlease_misses << dendl;
+
+  auto it = client_metrics_map.find(session->info.inst);
+  if (it == client_metrics_map.end()) {
+    return;
+  }
+
+  auto &metrics = it->second.second;
+  metrics.update_type = UPDATE_TYPE_REFRESH;
+  metrics.dentry_lease_metric.hits = payload.dlease_hits;
+  metrics.dentry_lease_metric.misses = payload.dlease_misses;
+  metrics.dentry_lease_metric.updated = true;
 }
 
 void MetricsHandler::handle_payload(Session *session, const UnknownPayload &payload) {
-  dout(5) << ": session=" << session << ", ignoring unknown payload" << dendl;
+  dout(5) << ": type=Unknown, session=" << session << ", ignoring unknown payload" << dendl;
 }
 
 void MetricsHandler::handle_client_metrics(const cref_t<MClientMetrics> &m) {
@@ -214,22 +252,29 @@ void MetricsHandler::notify_mdsmap(const MDSMap &mdsmap) {
   std::set<mds_rank_t> active_set;
 
   std::scoped_lock locker(lock);
-  // reset the sequence number so that last_updated_seq starts
-  // updating when the new rank0 mds pings us.
-  set_next_seq(0);
+
+  // reset sequence number when rank0 is unavailable or a new
+  // rank0 mds is chosen -- new rank0 will assign a starting
+  // sequence number when it is ready to process metric updates.
+  // this also allows to cut-short metric remove operations to
+  // be satisfied locally in many cases.
 
   // update new rank0 address
   mdsmap.get_active_mds_set(active_set);
   if (!active_set.count((mds_rank_t)0)) {
     dout(10) << ": rank0 is unavailable" << dendl;
     addr_rank0 = boost::none;
+    reset_seq();
     return;
   }
+
+  dout(10) << ": rank0 is mds." << mdsmap.get_mds_info((mds_rank_t)0).name << dendl;
 
   auto new_rank0_addr = mdsmap.get_addrs((mds_rank_t)0);
   if (addr_rank0 != new_rank0_addr) {
     dout(10) << ": rank0 addr is now " << new_rank0_addr << dendl;
     addr_rank0 = new_rank0_addr;
+    reset_seq();
   }
 }
 

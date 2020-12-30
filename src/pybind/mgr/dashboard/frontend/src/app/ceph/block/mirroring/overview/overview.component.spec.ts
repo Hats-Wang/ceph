@@ -4,11 +4,10 @@ import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
 import { RouterTestingModule } from '@angular/router/testing';
 
 import { NgbNavModule, NgbProgressbarModule } from '@ng-bootstrap/ng-bootstrap';
-import { BsDropdownModule } from 'ngx-bootstrap/dropdown';
 import { ToastrModule } from 'ngx-toastr';
 
-import { configureTestBed, i18nProviders } from '../../../../../testing/unit-test-helper';
-import { SharedModule } from '../../../../shared/shared.module';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { DaemonListComponent } from '../daemon-list/daemon-list.component';
 import { ImageListComponent } from '../image-list/image-list.component';
 import { MirrorHealthColorPipe } from '../mirror-health-color.pipe';
@@ -30,14 +29,12 @@ describe('OverviewComponent', () => {
     imports: [
       BrowserAnimationsModule,
       SharedModule,
-      BsDropdownModule.forRoot(),
       NgbNavModule,
       NgbProgressbarModule,
       HttpClientTestingModule,
       RouterTestingModule,
       ToastrModule.forRoot()
-    ],
-    providers: i18nProviders
+    ]
   });
 
   beforeEach(() => {

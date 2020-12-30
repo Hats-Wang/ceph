@@ -27,6 +27,7 @@
 #include "common/ceph_argparse.h"
 #include "common/common_init.h"
 #include "common/hobject.h"
+#include "common/EventTrace.h"
 
 #include "global/global_init.h"
 
@@ -717,7 +718,7 @@ void RADOS::Builder::build(boost::asio::io_context& ioctx,
     auto r = cct->_conf.parse_config_files(conf_files ? conf_files->data() : nullptr,
 					   &ss, flags);
     if (r < 0)
-      c->dispatch(std::move(c), ceph::to_error_code(r), RADOS{nullptr});
+      c->post(std::move(c), ceph::to_error_code(r), RADOS{nullptr});
   }
 
   cct->_conf.parse_env(cct->get_module_type());
@@ -726,7 +727,7 @@ void RADOS::Builder::build(boost::asio::io_context& ioctx,
     std::stringstream ss;
     auto r = cct->_conf.set_val(n, v, &ss);
     if (r < 0)
-      c->dispatch(std::move(c), ceph::to_error_code(-EINVAL), RADOS{nullptr});
+      c->post(std::move(c), ceph::to_error_code(-EINVAL), RADOS{nullptr});
   }
 
   if (!no_mon_conf) {
@@ -734,7 +735,7 @@ void RADOS::Builder::build(boost::asio::io_context& ioctx,
     // TODO This function should return an error code.
     auto err = mc_bootstrap.get_monmap_and_config();
     if (err < 0)
-      c->dispatch(std::move(c), ceph::to_error_code(err), RADOS{nullptr});
+      c->post(std::move(c), ceph::to_error_code(err), RADOS{nullptr});
   }
   if (!cct->_log->is_started()) {
     cct->_log->start();
@@ -748,21 +749,24 @@ void RADOS::make_with_cct(CephContext* cct,
 			  boost::asio::io_context& ioctx,
 			  std::unique_ptr<BuildComp> c) {
   try {
-    auto r = new detail::RADOS(ioctx, cct);
+    auto r = new detail::NeoClient{std::make_unique<detail::RADOS>(ioctx, cct)};
     r->objecter->wait_for_osd_map(
-      [c = std::move(c), r = std::unique_ptr<detail::RADOS>(r)]() mutable {
+      [c = std::move(c), r = std::unique_ptr<detail::Client>(r)]() mutable {
 	c->dispatch(std::move(c), bs::error_code{},
 		    RADOS{std::move(r)});
       });
   } catch (const bs::system_error& err) {
-    c->dispatch(std::move(c), err.code(), RADOS{nullptr});
+    c->post(std::move(c), err.code(), RADOS{nullptr});
   }
 }
 
+RADOS RADOS::make_with_librados(librados::Rados& rados) {
+  return RADOS{std::make_unique<detail::RadosClient>(rados.client)};
+}
 
 RADOS::RADOS() = default;
 
-RADOS::RADOS(std::unique_ptr<detail::RADOS> impl)
+RADOS::RADOS(std::unique_ptr<detail::Client> impl)
   : impl(std::move(impl)) {}
 
 RADOS::RADOS(RADOS&&) = default;
@@ -780,33 +784,52 @@ boost::asio::io_context& RADOS::get_io_context() {
 
 void RADOS::execute(const Object& o, const IOContext& _ioc, ReadOp&& _op,
 		    cb::list* bl,
-		    std::unique_ptr<ReadOp::Completion> c, version_t* objver) {
+		    std::unique_ptr<ReadOp::Completion> c, version_t* objver,
+		    const blkin_trace_info *trace_info) {
   auto oid = reinterpret_cast<const object_t*>(&o.impl);
   auto ioc = reinterpret_cast<const IOContextImpl*>(&_ioc.impl);
   auto op = reinterpret_cast<OpImpl*>(&_op.impl);
-  auto flags = 0; // Should be in Op.
+  auto flags = op->op.flags;
 
+  ZTracer::Trace trace;
+  if (trace_info) {
+    ZTracer::Trace parent_trace("", nullptr, trace_info);
+    trace.init("rados execute", &impl->objecter->trace_endpoint, &parent_trace);
+  }
+
+  trace.event("init");
   impl->objecter->read(
     *oid, ioc->oloc, std::move(op->op), ioc->snap_seq, bl, flags,
-    std::move(c), objver);
+    std::move(c), objver, nullptr /* data_offset */, 0 /* features */, &trace);
+
+  trace.event("submitted");
 }
 
 void RADOS::execute(const Object& o, const IOContext& _ioc, WriteOp&& _op,
-		    std::unique_ptr<WriteOp::Completion> c, version_t* objver) {
+		    std::unique_ptr<WriteOp::Completion> c, version_t* objver,
+		    const blkin_trace_info *trace_info) {
   auto oid = reinterpret_cast<const object_t*>(&o.impl);
   auto ioc = reinterpret_cast<const IOContextImpl*>(&_ioc.impl);
   auto op = reinterpret_cast<OpImpl*>(&_op.impl);
-  auto flags = 0; // Should be in Op.
+  auto flags = op->op.flags;
   ceph::real_time mtime;
   if (op->mtime)
     mtime = *op->mtime;
   else
     mtime = ceph::real_clock::now();
 
+  ZTracer::Trace trace;
+  if (trace_info) {
+    ZTracer::Trace parent_trace("", nullptr, trace_info);
+    trace.init("rados execute", &impl->objecter->trace_endpoint, &parent_trace);
+  }
+
+  trace.event("init");
   impl->objecter->mutate(
     *oid, ioc->oloc, std::move(op->op), ioc->snapc,
     mtime, flags,
-    std::move(c), objver);
+    std::move(c), objver, osd_reqid_t{}, &trace);
+  trace.event("submitted");
 }
 
 void RADOS::execute(const Object& o, std::int64_t pool, ReadOp&& _op,
@@ -873,11 +896,12 @@ void RADOS::lookup_pool(std::string_view name,
   if (ret < 0) {
     impl->objecter->wait_for_latest_osdmap(
       [name = std::string(name), c = std::move(c),
-       objecter = impl->objecter.get()]
+       objecter = impl->objecter]
       (bs::error_code ec) mutable {
 	int64_t ret =
-	  objecter->with_osdmap(std::mem_fn(&OSDMap::lookup_pg_pool_name),
-				name);
+	  objecter->with_osdmap([&](const OSDMap &osdmap) {
+	    return osdmap.lookup_pg_pool_name(name);
+	  });
 	if (ret < 0)
 	  ca::dispatch(std::move(c), osdc_errc::pool_dne,
 		       std::int64_t(0));
@@ -885,10 +909,10 @@ void RADOS::lookup_pool(std::string_view name,
 	  ca::dispatch(std::move(c), bs::error_code{}, ret);
       });
   } else if (ret < 0) {
-    ca::dispatch(std::move(c), osdc_errc::pool_dne,
+    ca::post(std::move(c), osdc_errc::pool_dne,
 		 std::int64_t(0));
   } else {
-    ca::dispatch(std::move(c), bs::error_code{}, ret);
+    ca::post(std::move(c), bs::error_code{}, ret);
   }
 }
 
@@ -1175,7 +1199,7 @@ void RADOS::unwatch(uint64_t cookie, const IOContext& _ioc,
 			 ioc->snapc, ceph::real_clock::now(), 0,
 			 Objecter::Op::OpComp::create(
 			   get_executor(),
-			   [objecter = impl->objecter.get(),
+			   [objecter = impl->objecter,
 			    linger_op, c = std::move(c)]
 			   (bs::error_code ec) mutable {
 			     objecter->linger_cancel(linger_op);
@@ -1203,7 +1227,7 @@ void RADOS::unwatch(uint64_t cookie, std::int64_t pool,
 			 {}, ceph::real_clock::now(), 0,
 			 Objecter::Op::OpComp::create(
 			   get_executor(),
-			   [objecter = impl->objecter.get(),
+			   [objecter = impl->objecter,
 			    linger_op, c = std::move(c)]
 			   (bs::error_code ec) mutable {
 			     objecter->linger_cancel(linger_op);
@@ -1279,7 +1303,7 @@ void RADOS::notify(const Object& o, const IOContext& _ioc, bufferlist&& bl,
   auto ioc = reinterpret_cast<const IOContextImpl*>(&_ioc.impl);
   auto linger_op = impl->objecter->linger_register(*oid, ioc->oloc, 0);
 
-  auto cb = std::make_shared<NotifyHandler>(impl->ioctx, impl->objecter.get(),
+  auto cb = std::make_shared<NotifyHandler>(impl->ioctx, impl->objecter,
                                             linger_op, std::move(c));
   linger_op->on_notify_finish =
     Objecter::LingerOp::OpComp::create(
@@ -1318,7 +1342,7 @@ void RADOS::notify(const Object& o, std::int64_t pool, bufferlist&& bl,
     oloc.key = *key;
   auto linger_op = impl->objecter->linger_register(*oid, oloc, 0);
 
-  auto cb = std::make_shared<NotifyHandler>(impl->ioctx, impl->objecter.get(),
+  auto cb = std::make_shared<NotifyHandler>(impl->ioctx, impl->objecter,
                                             linger_op, std::move(c));
   linger_op->on_notify_finish =
     Objecter::LingerOp::OpComp::create(
@@ -1521,7 +1545,7 @@ void RADOS::enable_application(std::string_view pool, std::string_view app_name,
   // preserved until Luminous is configured as minimum version.
   if (!impl->get_required_monitor_features().contains_all(
 	ceph::features::mon::FEATURE_LUMINOUS)) {
-    ca::dispatch(std::move(c), ceph::to_error_code(-EOPNOTSUPP));
+    ca::post(std::move(c), ceph::to_error_code(-EOPNOTSUPP));
   } else {
     impl->monclient.start_mon_command(
       { fmt::format("{{ \"prefix\": \"osd pool application enable\","
@@ -1533,6 +1557,43 @@ void RADOS::enable_application(std::string_view pool, std::string_view app_name,
 	    ca::post(std::move(c), e);
 	  });
   }
+}
+
+void RADOS::blocklist_add(std::string_view client_address,
+                          std::optional<std::chrono::seconds> expire,
+                          std::unique_ptr<SimpleOpComp> c) {
+  auto expire_arg = (expire ?
+    fmt::format(", \"expire\": \"{}.0\"", expire->count()) : std::string{});
+  impl->monclient.start_mon_command(
+    { fmt::format("{{"
+                  "\"prefix\": \"osd blocklist\", "
+                  "\"blocklistop\": \"add\", "
+                  "\"addr\": \"{}\"{}}}",
+                  client_address, expire_arg) },
+    {},
+    [this, client_address = std::string(client_address), expire_arg,
+     c = std::move(c)](bs::error_code ec, std::string, cb::list) mutable {
+      if (ec != bs::errc::invalid_argument) {
+        ca::post(std::move(c), ec);
+        return;
+      }
+
+      // retry using the legacy command
+      impl->monclient.start_mon_command(
+        { fmt::format("{{"
+                      "\"prefix\": \"osd blacklist\", "
+                      "\"blacklistop\": \"add\", "
+                      "\"addr\": \"{}\"{}}}",
+                      client_address, expire_arg) },
+        {},
+        [c = std::move(c)](bs::error_code ec, std::string, cb::list) mutable {
+          ca::post(std::move(c), ec);
+        });
+    });
+}
+
+void RADOS::wait_for_latest_osd_map(std::unique_ptr<SimpleOpComp> c) {
+  impl->objecter->wait_for_latest_osdmap(std::move(c));
 }
 
 void RADOS::mon_command(std::vector<std::string> command,
@@ -1637,7 +1698,7 @@ const bs::error_category& error_category() noexcept {
 }
 
 CephContext* RADOS::cct() {
-  return impl->cct;
+  return impl->cct.get();
 }
 }
 

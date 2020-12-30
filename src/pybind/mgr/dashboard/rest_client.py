@@ -16,8 +16,10 @@ from __future__ import absolute_import
 import inspect
 import logging
 import re
+
 import requests
 from requests.exceptions import ConnectionError, InvalidURL, Timeout
+
 from .settings import Settings
 from .tools import build_url
 
@@ -39,6 +41,7 @@ class TimeoutRequestsSession(requests.Session):
     """
     Set timeout argument for all requests if this is not already done.
     """
+
     def request(self, *args, **kwargs):
         if ((args[8] if len(args) > 8 else None) is None) \
                 and kwargs.get('timeout') is None:
@@ -511,7 +514,7 @@ class RestClient(object):
                 resp_structure = api_kwargs.get('resp_structure', None)
                 args_name = inspect.getargspec(func).args
                 args_dict = dict(zip(args_name[1:], args))
-                for key, val in kwargs:
+                for key, val in kwargs.items():
                     args_dict[key] = val
                 return func(
                     self,

@@ -35,6 +35,7 @@
 
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
+#include <boost/container/small_vector.hpp>
 #include <boost/intrusive/set.hpp>
 #include <boost/optional.hpp>
 
@@ -117,7 +118,7 @@ private:
     ::snprintf(fn, sizeof(fn),
 	       ENCODE_STRINGIFY(ENCODE_DUMP_PATH) "/%s__%d.%x", name,
 	       getpid(), i++);
-    int fd = ::open(fn, O_WRONLY|O_TRUNC|O_CREAT|O_CLOEXEC, 0644);
+    int fd = ::open(fn, O_WRONLY|O_TRUNC|O_CREAT|O_CLOEXEC|O_BINARY, 0644);
     if (fd < 0) {
       return;
     }
@@ -876,7 +877,7 @@ struct denc_traits<ceph::buffer::list> {
 template<typename A, typename B>
 struct denc_traits<
   std::pair<A, B>,
-  std::enable_if_t<denc_supported<A> && denc_supported<B>>> {
+  std::enable_if_t<denc_supported<std::remove_const_t<A>> && denc_supported<B>>> {
   typedef denc_traits<A> a_traits;
   typedef denc_traits<B> b_traits;
 
@@ -908,14 +909,14 @@ struct denc_traits<
   }
 
   static void decode(std::pair<A,B>& v, ceph::buffer::ptr::const_iterator& p, uint64_t f=0) {
-    denc(v.first, p, f);
+    denc(const_cast<std::remove_const_t<A>&>(v.first), p, f);
     denc(v.second, p, f);
   }
   template<typename AA=A>
   static std::enable_if_t<!!sizeof(AA) && !need_contiguous>
   decode(std::pair<A,B>& v, ceph::buffer::list::const_iterator& p,
 	 uint64_t f = 0) {
-    denc(v.first, p);
+    denc(const_cast<std::remove_const_t<AA>&>(v.first), p);
     denc(v.second, p);
   }
 };
@@ -1085,6 +1086,106 @@ struct denc_traits<
 				 _denc::pushback_details<std::vector<T, Ts...>>,
 				 T, Ts...> {};
 
+template<typename T, std::size_t N, typename ...Ts>
+struct denc_traits<
+  boost::container::small_vector<T, N, Ts...>,
+  typename std::enable_if_t<denc_traits<T>::supported>> {
+private:
+  using container = boost::container::small_vector<T, N, Ts...>;
+public:
+  using traits = denc_traits<T>;
+
+  static constexpr bool supported = true;
+  static constexpr bool featured = traits::featured;
+  static constexpr bool bounded = false;
+  static constexpr bool need_contiguous = traits::need_contiguous;
+
+  template<typename U=T>
+  static void bound_encode(const container& s, size_t& p, uint64_t f = 0) {
+    p += sizeof(uint32_t);
+    if constexpr (traits::bounded) {
+      if (!s.empty()) {
+	const auto elem_num = s.size();
+	size_t elem_size = 0;
+	if constexpr (traits::featured) {
+	  denc(*s.begin(), elem_size, f);
+        } else {
+          denc(*s.begin(), elem_size);
+        }
+        p += elem_size * elem_num;
+      }
+    } else {
+      for (const T& e : s) {
+	if constexpr (traits::featured) {
+	  denc(e, p, f);
+	} else {
+	  denc(e, p);
+	}
+      }
+    }
+  }
+
+  template<typename U=T>
+  static void encode(const container& s,
+		     ceph::buffer::list::contiguous_appender& p,
+		     uint64_t f = 0) {
+    denc((uint32_t)s.size(), p);
+    if constexpr (traits::featured) {
+      encode_nohead(s, p, f);
+    } else {
+      encode_nohead(s, p);
+    }
+  }
+  static void decode(container& s, ceph::buffer::ptr::const_iterator& p,
+		     uint64_t f = 0) {
+    uint32_t num;
+    denc(num, p);
+    decode_nohead(num, s, p, f);
+  }
+  template<typename U=T>
+  static std::enable_if_t<!!sizeof(U) && !need_contiguous>
+  decode(container& s, ceph::buffer::list::const_iterator& p) {
+    uint32_t num;
+    denc(num, p);
+    decode_nohead(num, s, p);
+  }
+
+  // nohead
+  static void encode_nohead(const container& s, ceph::buffer::list::contiguous_appender& p,
+			    uint64_t f = 0) {
+    for (const T& e : s) {
+      if constexpr (traits::featured) {
+        denc(e, p, f);
+      } else {
+        denc(e, p);
+      }
+    }
+  }
+  static void decode_nohead(size_t num, container& s,
+			    ceph::buffer::ptr::const_iterator& p,
+			    uint64_t f=0) {
+    s.clear();
+    s.reserve(num);
+    while (num--) {
+      T t;
+      denc(t, p, f);
+      s.push_back(std::move(t));
+    }
+  }
+  template<typename U=T>
+  static std::enable_if_t<!!sizeof(U) && !need_contiguous>
+  decode_nohead(size_t num, container& s,
+		ceph::buffer::list::const_iterator& p) {
+    s.clear();
+    s.reserve(num);
+    while (num--) {
+      T t;
+      denc(t, p);
+      s.push_back(std::move(t));
+    }
+  }
+};
+
 namespace _denc {
   template<typename Container>
   struct setlike_details : public container_details_base<Container> {
@@ -1116,8 +1217,7 @@ struct denc_traits<
 namespace _denc {
   template<typename Container>
   struct maplike_details : public container_details_base<Container> {
-    using T = std::pair<typename Container::key_type,
-			typename Container::mapped_type>;
+    using T = typename Container::value_type;
     template<typename ...Args>
     static void insert(Container& c, Args&& ...args) {
       c.emplace_hint(c.cend(), std::forward<Args>(args)...);

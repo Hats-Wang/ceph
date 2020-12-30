@@ -20,11 +20,11 @@
 #include <iostream>
 #include <string>
 
+#include "auth/KeyRing.h"
 #include "osd/OSD.h"
 #include "os/ObjectStore.h"
 #include "mon/MonClient.h"
 #include "include/ceph_features.h"
-
 #include "common/config.h"
 
 #include "mon/MonMap.h"
@@ -137,8 +137,7 @@ int main(int argc, const char **argv)
   auto cct = global_init(
     &defaults,
     args, CEPH_ENTITY_TYPE_OSD,
-    CODE_ENVIRONMENT_DAEMON,
-    0, "osd_data");
+    CODE_ENVIRONMENT_DAEMON, 0);
   ceph_heap_profiler_init();
 
   Preforker forker;
@@ -510,9 +509,8 @@ flushjournal_out:
   }
 
   {
-    auto from_release = require_osd_release;
     ostringstream err;
-    if (!can_upgrade_from(from_release, "require_osd_release", err)) {
+    if (!can_upgrade_from(require_osd_release, "require_osd_release", err)) {
       derr << err.str() << dendl;
       forker.exit(1);
     }
@@ -540,30 +538,19 @@ flushjournal_out:
   cluster_msg_type = cluster_msg_type.empty() ? msg_type : cluster_msg_type;
   uint64_t nonce = Messenger::get_pid_nonce();
   Messenger *ms_public = Messenger::create(g_ceph_context, public_msg_type,
-					   entity_name_t::OSD(whoami), "client",
-					   nonce,
-					   Messenger::HAS_HEAVY_TRAFFIC |
-					   Messenger::HAS_MANY_CONNECTIONS);
+					   entity_name_t::OSD(whoami), "client", nonce);
   Messenger *ms_cluster = Messenger::create(g_ceph_context, cluster_msg_type,
-					    entity_name_t::OSD(whoami), "cluster",
-					    nonce,
-					    Messenger::HAS_HEAVY_TRAFFIC |
-					    Messenger::HAS_MANY_CONNECTIONS);
+					    entity_name_t::OSD(whoami), "cluster", nonce);
   Messenger *ms_hb_back_client = Messenger::create(g_ceph_context, cluster_msg_type,
-					     entity_name_t::OSD(whoami), "hb_back_client",
-					     nonce, Messenger::HEARTBEAT);
+					     entity_name_t::OSD(whoami), "hb_back_client", nonce);
   Messenger *ms_hb_front_client = Messenger::create(g_ceph_context, public_msg_type,
-					     entity_name_t::OSD(whoami), "hb_front_client",
-					     nonce, Messenger::HEARTBEAT);
+					     entity_name_t::OSD(whoami), "hb_front_client", nonce);
   Messenger *ms_hb_back_server = Messenger::create(g_ceph_context, cluster_msg_type,
-						   entity_name_t::OSD(whoami), "hb_back_server",
-						   nonce, Messenger::HEARTBEAT);
+						   entity_name_t::OSD(whoami), "hb_back_server", nonce);
   Messenger *ms_hb_front_server = Messenger::create(g_ceph_context, public_msg_type,
-						    entity_name_t::OSD(whoami), "hb_front_server",
-						    nonce, Messenger::HEARTBEAT);
+						    entity_name_t::OSD(whoami), "hb_front_server", nonce);
   Messenger *ms_objecter = Messenger::create(g_ceph_context, public_msg_type,
-					     entity_name_t::OSD(whoami), "ms_objecter",
-					     nonce, 0);
+					     entity_name_t::OSD(whoami), "ms_objecter", nonce);
   if (!ms_public || !ms_cluster || !ms_hb_front_client || !ms_hb_back_client || !ms_hb_back_server || !ms_hb_front_server || !ms_objecter)
     forker.exit(1);
   ms_cluster->set_cluster_protocol(CEPH_OSD_PROTOCOL);
@@ -582,6 +569,9 @@ flushjournal_out:
     g_conf().get_val<Option::size_t>("osd_client_message_size_cap");
   boost::scoped_ptr<Throttle> client_byte_throttler(
     new Throttle(g_ceph_context, "osd_client_bytes", message_size));
+  uint64_t message_cap = g_conf().get_val<uint64_t>("osd_client_message_cap");
+  boost::scoped_ptr<Throttle> client_msg_throttler(
+    new Throttle(g_ceph_context, "osd_client_messages", message_cap));
 
   // All feature bits 0 - 34 should be present from dumpling v0.67 forward
   uint64_t osd_required =
@@ -592,7 +582,7 @@ flushjournal_out:
   ms_public->set_default_policy(Messenger::Policy::stateless_registered_server(0));
   ms_public->set_policy_throttlers(entity_name_t::TYPE_CLIENT,
 				   client_byte_throttler.get(),
-				   nullptr);
+				   client_msg_throttler.get());
   ms_public->set_policy(entity_name_t::TYPE_MON,
                         Messenger::Policy::lossy_client(osd_required));
   ms_public->set_policy(entity_name_t::TYPE_MGR,
@@ -766,6 +756,7 @@ flushjournal_out:
   delete ms_objecter;
 
   client_byte_throttler.reset();
+  client_msg_throttler.reset();
 
   // cd on exit, so that gmon.out (if any) goes into a separate directory for each node.
   char s[20];

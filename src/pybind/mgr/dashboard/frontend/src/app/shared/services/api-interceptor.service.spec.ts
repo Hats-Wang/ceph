@@ -5,8 +5,8 @@ import { Router } from '@angular/router';
 
 import { ToastrService } from 'ngx-toastr';
 
-import { configureTestBed, i18nProviders } from '../../../testing/unit-test-helper';
-import { AppModule } from '../../app.module';
+import { AppModule } from '~/app/app.module';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { NotificationType } from '../enum/notification-type.enum';
 import { CdNotification, CdNotificationConfig } from '../models/cd-notification';
 import { ApiInterceptorService } from './api-interceptor.service';
@@ -19,9 +19,9 @@ describe('ApiInterceptorService', () => {
   let router: Router;
   const url = 'api/xyz';
 
-  const httpError = (error: any, errorOpts: object, done = (_resp: any) => {}) => {
+  const httpError = (error: any, errorOpts: object, done = (_resp: any): any => undefined) => {
     httpClient.get(url).subscribe(
-      () => {},
+      () => true,
       (resp) => {
         // Error must have been forwarded by the interceptor.
         expect(resp instanceof HttpErrorResponse).toBeTruthy();
@@ -62,7 +62,6 @@ describe('ApiInterceptorService', () => {
     imports: [AppModule, HttpClientTestingModule],
     providers: [
       NotificationService,
-      i18nProviders,
       {
         provide: ToastrService,
         useValue: {
@@ -111,7 +110,7 @@ describe('ApiInterceptorService', () => {
         {
           status: 403
         },
-        [['/403']]
+        [['error'], {'state': {'header': 'Access Denied', 'icon': 'fa fa-lock', 'message': 'Sorry, you don’t have permission to view this page or resource.', 'source': 'forbidden'}}] // prettier-ignore
       );
     });
 

@@ -12,6 +12,7 @@
 #include "test/librbd/mock/MockJournal.h"
 #include "test/librbd/mock/MockObjectMap.h"
 #include "test/librbd/mock/MockOperations.h"
+#include "test/librbd/mock/MockPluginRegistry.h"
 #include "test/librbd/mock/MockReadahead.h"
 #include "test/librbd/mock/io/MockImageDispatcher.h"
 #include "test/librbd/mock/io/MockObjectDispatcher.h"
@@ -26,7 +27,6 @@ class MockSafeTimer;
 
 namespace librbd {
 
-namespace cache { class MockImageCache; }
 namespace operation {
 template <typename> class ResizeRequest;
 }
@@ -40,7 +40,6 @@ struct MockImageCtx {
     ceph_assert(s_instance != nullptr);
     return s_instance;
   }
-  MOCK_METHOD0(destroy, void());
 
   MockImageCtx(librbd::ImageCtx &image_ctx)
     : image_ctx(&image_ctx),
@@ -62,6 +61,8 @@ struct MockImageCtx {
       lockers(image_ctx.lockers),
       exclusive_locked(image_ctx.exclusive_locked),
       lock_tag(image_ctx.lock_tag),
+      asio_engine(image_ctx.asio_engine),
+      rados_api(image_ctx.rados_api),
       owner_lock(image_ctx.owner_lock),
       image_lock(image_ctx.image_lock),
       timestamp_lock(image_ctx.timestamp_lock),
@@ -86,6 +87,7 @@ struct MockImageCtx {
       io_image_dispatcher(new io::MockImageDispatcher()),
       io_object_dispatcher(new io::MockObjectDispatcher()),
       op_work_queue(new MockContextWQ()),
+      plugin_registry(new MockPluginRegistry()),
       readahead_max_bytes(image_ctx.readahead_max_bytes),
       event_socket(image_ctx.event_socket),
       parent(NULL), operations(new MockOperations()),
@@ -126,6 +128,7 @@ struct MockImageCtx {
     delete operations;
     delete image_watcher;
     delete op_work_queue;
+    delete plugin_registry;
     delete io_image_dispatcher;
     delete io_object_dispatcher;
   }
@@ -219,6 +222,10 @@ struct MockImageCtx {
   MOCK_CONST_METHOD0(get_stripe_count, uint64_t());
   MOCK_CONST_METHOD0(get_stripe_period, uint64_t());
 
+  MOCK_METHOD0(rebuild_data_io_context, void());
+  IOContext get_data_io_context();
+  IOContext duplicate_data_io_context();
+
   static void set_timer_instance(MockSafeTimer *timer, ceph::mutex *timer_lock);
   static void get_timer_instance(CephContext *cct, MockSafeTimer **timer,
                                  ceph::mutex **timer_lock);
@@ -248,6 +255,9 @@ struct MockImageCtx {
            rados::cls::lock::locker_info_t> lockers;
   bool exclusive_locked;
   std::string lock_tag;
+
+  std::shared_ptr<AsioEngine> asio_engine;
+  neorados::RADOS& rados_api;
 
   librados::IoCtx md_ctx;
   librados::IoCtx data_ctx;
@@ -287,7 +297,7 @@ struct MockImageCtx {
   io::MockObjectDispatcher *io_object_dispatcher;
   MockContextWQ *op_work_queue;
 
-  cache::MockImageCache *image_cache = nullptr;
+  MockPluginRegistry* plugin_registry;
 
   MockReadahead readahead;
   uint64_t readahead_max_bytes;
@@ -321,6 +331,7 @@ struct MockImageCtx {
   bool cache;
 
   ConfigProxy config;
+  std::set<std::string> config_overrides;
 };
 
 } // namespace librbd

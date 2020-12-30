@@ -174,6 +174,9 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
 
   rocksdb::Status Append(const rocksdb::Slice& data) override {
     h->append(data.data(), data.size());
+    // Avoid calling many time Append() and then calling Flush().
+    // Especially for buffer mode, flush much data will cause jitter.
+    fs->try_flush(h);
     return rocksdb::Status::OK();
   }
 
@@ -243,7 +246,7 @@ class BlueRocksWritableFile : public rocksdb::WritableFile {
    * Get the size of valid data in the file.
    */
   uint64_t GetFileSize() override {
-    return h->file->fnode.size + h->buffer.length();;
+    return h->file->fnode.size + h->get_buffer_length();;
   }
 
   // For documentation, refer to RandomAccessFile::GetUniqueId()

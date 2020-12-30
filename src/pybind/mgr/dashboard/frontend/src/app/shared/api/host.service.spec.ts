@@ -1,7 +1,7 @@
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { fakeAsync, TestBed, tick } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { HostService } from './host.service';
 
 describe('HostService', () => {
@@ -40,6 +40,33 @@ describe('HostService', () => {
     const hostname = 'hostname';
     service.getDevices(hostname).subscribe();
     const req = httpTesting.expectOne(`api/host/${hostname}/devices`);
+    expect(req.request.method).toBe('GET');
+  });
+
+  it('should update host', fakeAsync(() => {
+    service.update('mon0', ['foo', 'bar']).subscribe();
+    const req = httpTesting.expectOne('api/host/mon0');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ labels: ['foo', 'bar'] });
+  }));
+
+  it('should call getInventory', () => {
+    service.getInventory('host-0').subscribe();
+    let req = httpTesting.expectOne('api/host/host-0/inventory');
+    expect(req.request.method).toBe('GET');
+
+    service.getInventory('host-0', true).subscribe();
+    req = httpTesting.expectOne('api/host/host-0/inventory?refresh=true');
+    expect(req.request.method).toBe('GET');
+  });
+
+  it('should call inventoryList', () => {
+    service.inventoryList().subscribe();
+    let req = httpTesting.expectOne('ui-api/host/inventory');
+    expect(req.request.method).toBe('GET');
+
+    service.inventoryList(true).subscribe();
+    req = httpTesting.expectOne('ui-api/host/inventory?refresh=true');
     expect(req.request.method).toBe('GET');
   });
 });

@@ -5,9 +5,10 @@ Archived Releases
 .. toctree::
    :maxdepth: 1
 
+   Mimic <mimic>
    Luminous <luminous>
-   Jewel <jewel>
    Kraken <kraken>
+   Jewel <jewel>
    Infernalis <infernalis>
    Hammer <hammer>
    Giant <giant>

@@ -40,15 +40,17 @@ class MLog;
 class Messenger;
 class AioCompletionImpl;
 
+namespace neorados { namespace detail { class RadosClient; }}
+
 class librados::RadosClient : public Dispatcher,
 			      public md_config_obs_t
 {
+  friend neorados::detail::RadosClient;
 public:
   using Dispatcher::cct;
 private:
   std::unique_ptr<CephContext,
-		  std::function<void(CephContext*)> > cct_deleter{
-    cct, [](CephContext *p) {p->put();}};
+		  std::function<void(CephContext*)>> cct_deleter;
 
 public:
   const ConfigProxy& conf{cct->_conf};
@@ -89,6 +91,7 @@ private:
   bool service_daemon = false;
   string daemon_name, service_name;
   map<string,string> daemon_metadata;
+  ceph::timespan rados_mon_op_timeout{};
 
   int wait_for_osdmap();
 
@@ -144,7 +147,7 @@ public:
 
   int pool_delete_async(const char *name, PoolAsyncCompletionImpl *c);
 
-  int blacklist_add(const string& client_address, uint32_t expire_seconds);
+  int blocklist_add(const string& client_address, uint32_t expire_seconds);
 
   int mon_command(const vector<string>& cmd, const bufferlist &inbl,
 	          bufferlist *outbl, string *outs);
@@ -173,7 +176,7 @@ public:
 
   void get();
   bool put();
-  void blacklist_self(bool set);
+  void blocklist_self(bool set);
 
   std::string get_addrs() const;
 

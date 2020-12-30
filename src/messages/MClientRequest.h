@@ -35,20 +35,37 @@
 
 #include <string_view>
 
-#include "msg/Message.h"
 #include "include/filepath.h"
 #include "mds/mdstypes.h"
 #include "include/ceph_features.h"
+#include "messages/MMDSOp.h"
 
 #include <sys/types.h>
 #include <utime.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
+struct SnapPayload {
+  std::map<std::string, std::string> metadata;
+
+  void encode(ceph::buffer::list &bl) const {
+    ENCODE_START(1, 1, bl);
+    encode(metadata, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(ceph::buffer::list::const_iterator &iter) {
+    DECODE_START(1, iter);
+    decode(metadata, iter);
+    DECODE_FINISH(iter);
+  }
+};
+
+WRITE_CLASS_ENCODER(SnapPayload)
 
 // metadata ops.
 
-class MClientRequest : public SafeMessage {
+class MClientRequest final : public MMDSOp {
 private:
   static constexpr int HEAD_VERSION = 4;
   static constexpr int COMPAT_VERSION = 1;
@@ -89,13 +106,13 @@ public:
 protected:
   // cons
   MClientRequest()
-    : SafeMessage(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {}
+    : MMDSOp(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {}
   MClientRequest(int op)
-    : SafeMessage(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
+    : MMDSOp(CEPH_MSG_CLIENT_REQUEST, HEAD_VERSION, COMPAT_VERSION) {
     memset(&head, 0, sizeof(head));
     head.op = op;
   }
-  ~MClientRequest() override {}
+  ~MClientRequest() final {}
 
 public:
   void set_mdsmap_epoch(epoch_t e) { head.mdsmap_epoch = e; }

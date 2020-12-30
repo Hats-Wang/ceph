@@ -140,13 +140,13 @@ private:
 private:
   void tick();
 
-  seastar::future<> ms_dispatch(crimson::net::Connection* conn,
-				MessageRef m) override;
+  std::optional<seastar::future<>> ms_dispatch(crimson::net::ConnectionRef conn,
+                                               MessageRef m) override;
   void ms_handle_reset(crimson::net::ConnectionRef conn, bool is_replace) override;
 
-  seastar::future<> handle_monmap(crimson::net::Connection* conn,
+  seastar::future<> handle_monmap(crimson::net::ConnectionRef conn,
 				  Ref<MMonMap> m);
-  seastar::future<> handle_auth_reply(crimson::net::Connection* conn,
+  seastar::future<> handle_auth_reply(crimson::net::ConnectionRef conn,
 				      Ref<MAuthReply> m);
   seastar::future<> handle_subscribe_ack(Ref<MMonSubscribeAck> m);
   seastar::future<> handle_get_version_reply(Ref<MMonGetVersionReply> m);
@@ -154,6 +154,7 @@ private:
   seastar::future<> handle_log_ack(Ref<MLogAck> m);
   seastar::future<> handle_config(Ref<MConfig> m);
 
+  void send_pendings();
 private:
   seastar::future<> load_keyring();
   seastar::future<> authenticate();
@@ -162,7 +163,16 @@ private:
   seastar::future<> reopen_session(int rank);
   std::vector<unsigned> get_random_mons(unsigned n) const;
   seastar::future<> _add_conn(unsigned rank, uint64_t global_id);
+  void _finish_auth(const entity_addr_t& peer);
   crimson::common::Gated gate;
+
+  // messages that are waiting for the active_con to be available
+  struct pending_msg_t {
+    pending_msg_t(MessageRef& m) : msg(m) {}
+    MessageRef msg;
+    seastar::promise<> pr;
+  };
+  std::deque<pending_msg_t> pending_messages;
 };
 
 inline std::ostream& operator<<(std::ostream& out, const Client& client) {
